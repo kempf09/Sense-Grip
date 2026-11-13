@@ -14,6 +14,8 @@ Base: Release 3.0.3 on `main`.
 - The SEN0628 acquisition, calibration data, 3D page, FSR pin map, and saved OPEN/TOUCH references are unchanged.
 - Position speed is capped at 61 command units (about 44.7 RPM using the CF35-12 speed-unit conversion). Existing saved speed values are clamped on load.
 - The continuous approach timeout defaults to 8 seconds.
+- FSR force calibration accepts two non-zero calibration points from 0.2 to 30 N; unloaded force is represented by the zero offset. The per-channel hard software force ceiling defaults to 30 N and can be configured from 1 to 30 N.
+- Release now defaults to speed command 61 (the documented maximum) and a 30-second timeout. The previous default speed of 20 is approximately 14.6 RPM; a 4.21-revolution return can take about 17.2 seconds at no-load speed, leaving little margin for acceleration and mechanical load.
 
 ## Timing limit
 
