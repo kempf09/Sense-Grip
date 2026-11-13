@@ -182,6 +182,12 @@ struct MotorReading {
   bool modeKnown=false;
 };
 MotorReading motor;
+struct Cf35DiagSnapshot {
+  bool infoOk=false,limitsOk=false,phaseOk=false,modeOk=false,feedbackOk=false;
+  uint8_t info[5]={0},limits[4]={0},phase=0,mode=255,feedback[18]={0};
+  uint32_t capturedMs=0;
+};
+Cf35DiagSnapshot cf35Diag;
 uint32_t motorLastGoodMs=0;
 bool lastMotorCommandOk=true;
 char lastMotorCommandError[96]="";
@@ -457,6 +463,20 @@ bool pollMotor() {
   next.current=sm15(u16(b+13));next.mA=next.current*6.5f;next.degrees=next.position*0.087f;next.ok=true;
   portENTER_CRITICAL(&sharedMux);motor=next;motorLastGoodMs=millis();portEXIT_CRITICAL(&sharedMux);
   return true;
+}
+
+// Read-only register survey. Runs only in the Core-1 controller task.
+// Registers 65 and 67-68 are included in the 56-73 feedback block.
+void pollCf35Diagnostics() {
+  Cf35DiagSnapshot next{};
+  char e[64]="";
+  next.infoOk=readBus(servoId,0,5,next.info,e,sizeof(e));
+  next.limitsOk=readBus(servoId,9,4,next.limits,e,sizeof(e));
+  next.phaseOk=readBus(servoId,18,1,&next.phase,e,sizeof(e));
+  next.modeOk=readBus(servoId,33,1,&next.mode,e,sizeof(e));
+  next.feedbackOk=readBus(servoId,56,18,next.feedback,e,sizeof(e));
+  next.capturedMs=millis();
+  portENTER_CRITICAL(&sharedMux);cf35Diag=next;portEXIT_CRITICAL(&sharedMux);
 }
 
 bool beginPositionMove(long target,uint16_t speed,uint16_t currentLimit,MotionOwner owner,uint32_t timeoutMs=POSITION_TIMEOUT_MS) {
@@ -815,6 +835,17 @@ void apiStatus() {
   for(uint8_t i=0;i<SENSOR_COUNT;i++){if(i)j+=',';j+=String("{\"online\":")+(ss[i].lastReadOK?"true":"false")+",\"ok\":"+String(ss[i].okCount)+",\"err\":"+String(ss[i].errorCount)+"}";}
   j+="]";json(true,j);
 }
+void apiCf35Diagnostics() {
+  Cf35DiagSnapshot d;portENTER_CRITICAL(&sharedMux);d=cf35Diag;portEXIT_CRITICAL(&sharedMux);
+  String j="{\"ageMs\":"+String(d.capturedMs?millis()-d.capturedMs:0)+
+    ",\"infoOk\":"+(d.infoOk?"true":"false")+",\"info\":["+String(d.info[0])+","+String(d.info[1])+","+String(d.info[2])+","+String(d.info[3])+","+String(d.info[4])+"]"+
+    ",\"limitsOk\":"+(d.limitsOk?"true":"false")+",\"limits\":["+String(d.limits[0])+","+String(d.limits[1])+","+String(d.limits[2])+","+String(d.limits[3])+"]"+
+    ",\"phaseOk\":"+(d.phaseOk?"true":"false")+",\"phase\":"+String(d.phase)+
+    ",\"modeOk\":"+(d.modeOk?"true":"false")+",\"mode\":"+String(d.mode)+
+    ",\"feedbackOk\":"+(d.feedbackOk?"true":"false")+",\"feedback\":[";
+  for(uint8_t i=0;i<18;i++){if(i)j+=',';j+=String(d.feedback[i]);}
+  j+="]}";server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",j);
+}
 void apiConfig() {
   FsmConfig c;portENTER_CRITICAL(&sharedMux);c=fc;portEXIT_CRITICAL(&sharedMux);
   String j=String("\"closePositive\":")+(c.closePositive?"true":"false")+",\"openZero\":"+String(c.openZero)+",\"openZeroValid\":"+(c.openZeroValid?"true":"false")+
@@ -946,7 +977,7 @@ const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta ch
 <section id="servo" class="page"><h1>Servo setup</h1><p class="note">The ESP32 controls the CF35-12 in position mode 0. There is no absolute-position input. Select a finite increment; the ESP32 creates the relative position command.</p><div class="grid"><div class="card"><h2>Live servo</h2><div class="value" id="servoPos">--</div><div class="metric"><span>Target</span><b id="servoTarget">--</b></div><div class="metric"><span>Mode</span><b id="servoMode">--</b></div><div class="metric"><span>Motion</span><b id="servoMoving">--</b></div><button class="btn secondary" onclick="cmd('moveOpen')">Move to saved OPEN zero</button></div><div class="card"><h2>Controller movement</h2><label for="servoStep">Movement increment (encoder counts)<select id="servoStep" onchange="updateStepLabels()"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1000</option></select></label><p class="note">Each press makes one relative move. Large increments (250–1000) are for coarse positioning only. Keep fingers and the mechanism clear. Use 20 or 50 counts when approaching contact. Closing stops at three-finger contact or the configured maximum FSR force. A saved TOUCH position also limits closing travel.</p><button class="btn" id="stepOpenBtn" onclick="cmdStep('stepOpen')">Step OPEN −20 counts</button><button class="btn green" id="stepCloseBtn" onclick="cmdStep('stepClose')">Step CLOSE +20 counts</button><hr class="divider"><button class="btn green" onclick="cmd('setOpenZero')">SET current position as OPEN zero</button><button class="btn amber" id="setTouchBtn" onclick="cmd('setTouch')">SAVE three-finger TOUCH position</button><p class="note">Finger 1: FSR6/GPIO10 + FSR2/GPIO1. Finger 2: FSR4/GPIO5 + FSR3/GPIO4. Finger 3: FSR5/GPIO6 + FSR1/GPIO2. TOUCH is saved only when all three finger groups indicate contact.</p></div></div><div class="card"><h2>Calibration status</h2><div class="metric"><span>OPEN zero</span><b id="servoOpenZero">not set</b></div><div class="metric"><span>Three-finger TOUCH position</span><b id="servoTouch">not set</b></div><div id="servoMessage" class="log">Waiting for controller.</div></div></section>
 <section id="fsm" class="page"><h1>Grasp state machine</h1><p class="note">Simple sequence: POSITIONING → GRASPING → HOLDING → RELEASING. SEN0628 acquisition is kept separate and is not used as an FSM trigger in this release.</p><div id="stateBar" class="statebar"></div><div class="grid"><div class="card"><h2>Cycle control</h2><button class="btn green" onclick="cmd('start')">START GRASP</button><button class="btn" onclick="cmd('release')">RELEASE</button><button class="btn amber" onclick="cmd('pause')">PAUSE</button><button class="btn secondary" onclick="cmd('reset')">RESET / ACKNOWLEDGE</button><button class="btn red" onclick="cmd('estop')">EMERGENCY STOP</button><div class="metric"><span>State time</span><b id="stateTime">--</b></div><div class="metric"><span>Force-loss warning</span><b id="forceLoss">--</b></div></div><div class="card"><h2>Current cycle</h2><div class="metric"><span>Average active FSR force</span><b id="avgForce">--</b></div><div class="metric"><span>Maximum channel force</span><b id="maxForce">--</b></div><div class="metric"><span>Active fingers</span><b id="activeFingers">--</b></div><div class="metric"><span>FSR calibration</span><b id="fsrCal">--</b></div><div class="metric"><span>Travel calibration</span><b id="travelCal">--</b></div></div></div><div class="card" style="margin-top:12px"><h2>Simple FSM settings</h2><p class="note">Settings apply to the automatic grasp cycle. Change them only when the controller is IDLE and the servo is stopped. Force values are based on your saved FSR calibration. Begin with the defaults below and change one parameter at a time.</p><form id="cfg" class="formgrid"></form><div class="cfg-actions"><button class="btn green" onclick="saveCfg()">Save settings</button><div id="cfgMsg" class="note">Changes are stored in ESP32 NVS.</div></div></div></section>
 <section id="fsrPage" class="page"><h1>FSR calibration</h1><p class="note">Six independent FSR402 channels, calibrated over 0–30 N. Keep the sensor unloaded when setting zero. Use two non-zero known force points (0.2–30 N) for each channel.</p><div id="fsrCfg" class="grid"></div></section>
-<section id="diag" class="page"><h1>Diagnostics</h1><div class="card"><div class="metric"><span>Web task core</span><b>0</b></div><div class="metric"><span>Sensor / motor controller core</span><b>1</b></div><div class="metric"><span>Three-sensor scan time</span><b id="scanTime">--</b></div><div id="lastAction" class="log">--</div></div><div class="grid" id="diagCards"></div><p class="note">Wi-Fi and HTTP handling run separately from the core-1 controller loop. HTTP handlers only read snapshots or queue commands. They do not access I²C, ADC or motor UART.</p></section>
+<section id="diag" class="page"><h1>Diagnostics</h1><div class="card"><div class="metric"><span>Web task core</span><b>0</b></div><div class="metric"><span>Sensor / motor controller core</span><b>1</b></div><div class="metric"><span>Three-sensor scan time</span><b id="scanTime">--</b></div><div id="lastAction" class="log">--</div></div><div class="card"><h2>CF35-12 read-only register survey</h2><p class="note">Automatic read-only capture. No servo settings are written and no motor movement is commanded. Values are raw decimal register bytes.</p><div class="metric"><span>Capture age</span><b id="cfDiagAge">--</b></div><div class="metric"><span>Registers 0–4</span><b id="cfDiagInfo">--</b></div><div class="metric"><span>Registers 9–12</span><b id="cfDiagLimits">--</b></div><div class="metric"><span>Register 18 (phase)</span><b id="cfDiagPhase">--</b></div><div class="metric"><span>Register 33 (mode)</span><b id="cfDiagMode">--</b></div><div class="metric"><span>Registers 56–73</span><b id="cfDiagFeedback">--</b></div><p class="note">Register 65 is byte 9 of the feedback block. Registers 67–68 are bytes 11–12. Save the raw capture with the test notes.</p></div><div class="grid" id="diagCards"></div><p class="note">Wi-Fi and HTTP handling run separately from the core-1 controller loop. HTTP handlers only read snapshots or queue commands. They do not access I²C, ADC or motor UART.</p></section>
 </main></div>
 <script>
 'use strict';const $=id=>document.getElementById(id);
@@ -965,7 +996,7 @@ $('fingerRow').innerHTML=s.finger.map((f,i)=>`<div class="finger ${f.touching?'o
 $('fsrCards').innerHTML=s.fsr.map((f,i)=>`<div class="fsr"><b>FSR ${f.channel} · GPIO${f.gpio}</b><div class="value">${f.force===null?'--':f.force.toFixed(2)+' N'}</div><div class="small">${f.raw} raw · ${f.ohms.toFixed(0)} Ω · ${f.calibrated?'calibrated':'not calibrated'}</div></div>`).join('');
 $('senCards').innerHTML=s.sen.map((v,i)=>`<div class="card"><b>SEN0628 ${i+1}</b><div class="${v.online?'good':'bad'}">${v.online?'ONLINE':'NO RECENT FRAME'}</div><small class="muted">${v.ok} successful · ${v.err} errors</small></div>`).join('');
 $('diagCards').innerHTML=$('senCards').innerHTML;$('warning').innerHTML=!s.motorModeReady?'<div class="dangerBox">CF35-12 must report position mode 0. Motion is locked.</div>':!s.fsrCalibrationOk?'<div class="dangerBox">Calibrate all six FSR channels before grasping.</div>':!s.travelValid?'<div class="dangerBox">Set OPEN zero and three-finger TOUCH before starting the FSM.</div>':s.state==='FAULT'?`<div class="dangerBox">${s.reason} Use RESET only after checking the mechanism.</div>`:'';}
-async function poll(){try{renderStatus(await req('/api/status'));}catch(e){$('conn').textContent='OFFLINE';$('conn').className='pill bad';}setTimeout(poll,250);}
+async function poll(){try{renderStatus(await req('/api/status'));if($('diag').classList.contains('on')){const d=await req('/api/cf35/diagnostics');const fmt=(ok,v)=>ok?v.join(', '):'READ FAILED';$('cfDiagAge').textContent=d.ageMs+' ms';$('cfDiagInfo').textContent=fmt(d.infoOk,d.info);$('cfDiagLimits').textContent=fmt(d.limitsOk,d.limits);$('cfDiagPhase').textContent=d.phaseOk?String(d.phase):'READ FAILED';$('cfDiagMode').textContent=d.modeOk?String(d.mode):'READ FAILED';$('cfDiagFeedback').textContent=fmt(d.feedbackOk,d.feedback);}}catch(e){$('conn').textContent='OFFLINE';$('conn').className='pill bad';}setTimeout(poll,1000);}
 const cfgFields=[
  ['contactForceN','Contact threshold','Either FSR in each finger group can reach this force to register that finger as touching.','0.10–2.00 N',0.10,2.00,0.05],
  ['contactConsecutive','Contact debounce','Consecutive FSR samples required before a finger is marked as touching. 3 samples are about 60 ms.','1–10 samples',1,10,1],
@@ -1421,6 +1452,7 @@ void setupRoutes() {
   server.on("/",HTTP_GET,[]{server.send_P(200,"text/html; charset=utf-8",PAGE);});
   server.on("/sen0628",HTTP_GET,[]{server.send_P(200,"text/html; charset=utf-8",SEN0628_PAGE);});
   server.on("/api/status",HTTP_GET,apiStatus);
+  server.on("/api/cf35/diagnostics",HTTP_GET,apiCf35Diagnostics);
   server.on("/api/config",HTTP_GET,apiConfig);
   server.on("/api/config",HTTP_POST,saveConfigApi);
   server.on("/api/fsr/config",HTTP_GET,apiFsrConfig);
@@ -1477,7 +1509,7 @@ void controllerTask(void*) {
   if(!stopOk||!motor.ok)setFault("Boot motor stop or link check failed");
   else if(!motorModeReady())setAction("Motor is online but not in position mode 0. Motion is locked.",false);
   else setAction("Controller ready. Configure OPEN and three-finger TOUCH references.",true);
-  uint32_t lastFsr=millis(),lastMotor=millis(),lastMode=millis();
+  uint32_t lastFsr=millis(),lastMotor=millis(),lastMode=millis(),lastDiag=millis();
   for(;;) {
     uint32_t now=millis();
     bool stopNow=false;portENTER_CRITICAL(&sharedMux);stopNow=estopRequested;estopRequested=false;portEXIT_CRITICAL(&sharedMux);
@@ -1485,6 +1517,7 @@ void controllerTask(void*) {
     processControlQueue();
     if(now-lastFsr>=FSR_PERIOD_MS){lastFsr=now;sampleFsr();}
     if(now-lastMotor>=MOTOR_PERIOD_MS){lastMotor=now;pollMotor();}
+    if(now-lastDiag>=2000){lastDiag=now;pollCf35Diagnostics();}
     if(now-lastMode>=MODE_CHECK_MS){lastMode=now;if(!readMotorMode()&&fsmEnabled)setFault("CF35-12 mode register read failed during FSM motion");}
     updatePositionMotion();updateFsm();
     vTaskDelay(pdMS_TO_TICKS(1));
