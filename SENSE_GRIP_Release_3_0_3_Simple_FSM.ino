@@ -42,10 +42,10 @@ static constexpr uint8_t SENSOR_COUNT = 3;
 static constexpr uint8_t SENSOR_ADDR[SENSOR_COUNT] = {0x33,0x30,0x31};
 static const char* SENSOR_NAME[SENSOR_COUNT] = {"S1","S2","S3"};
 static constexpr uint32_t FSR_PERIOD_MS = 20;
-static constexpr uint32_t MOTOR_PERIOD_MS = 50;
+static constexpr uint32_t MOTOR_PERIOD_MS = 10;
 static constexpr uint32_t MODE_CHECK_MS = 1500;
 static constexpr uint32_t MOTOR_STALE_MS = 500;
-static constexpr uint32_t POSITION_TIMEOUT_MS = 3500;
+static constexpr uint32_t POSITION_TIMEOUT_MS = 8000;
 static constexpr uint16_t SETUP_STEP_COUNTS = 20;  // Controller-generated movement; no absolute position input.
 static constexpr uint16_t DEFAULT_CONTACT_STEP_COUNTS = 20;
 static constexpr uint16_t DEFAULT_GRASP_STEP_COUNTS = 10;
@@ -126,7 +126,7 @@ struct FsmConfig {
   uint16_t travelSafetyMarginCounts,contactStepCounts,graspStepCounts,manualJogStepCounts;
 };
 static constexpr uint32_t FSM_MAGIC=0x46534D34;
-static constexpr uint8_t FSM_CONFIG_VERSION=2;
+static constexpr uint8_t FSM_CONFIG_VERSION=3;
 FsmConfig fc;
 
 void defaultFsm() {
@@ -149,7 +149,7 @@ void defaultFsm() {
   fc.minimumActiveFsr = 3;                // At least three individual FSR channels contribute.
   fc.contactMinActiveFsr = 1;             // Retained legacy field; finger contact is group-based.
   fc.graspSpeed = 10;                     // CF35-12 speed command units.
-  fc.positionSpeed = 15;                  // Slow contact-search speed.
+  fc.positionSpeed = 61;                  // Maximum documented CF35-12 speed command (~44.7 RPM).
   fc.releaseSpeed = 20;                   // Moderate release speed.
   fc.closeCurrentLimit = 200;             // Existing CF35-12 current-limit command value.
   fc.openCurrentLimit = 260;              // Existing CF35-12 current-limit command value.
@@ -161,7 +161,7 @@ void defaultFsm() {
   fc.contactConsecutive = 3;               // 3 samples at 20 ms = approximately 60 ms.
   fc.forceConsecutive = 3;                 // 3 samples at 20 ms = approximately 60 ms.
   fc.openPositionToleranceCounts = 8;
-  fc.positioningTimeoutMs = 30000;         // Allow a full contact search across calibrated travel.
+  fc.positioningTimeoutMs = 8000;          // Continuous approach timeout; full calibrated travel is about 5.6 s at max no-load speed.
   fc.graspTimeoutMs = 15000;
   fc.releaseTimeoutMs = 20000;             // Allow the full return from TOUCH to OPEN.
   fc.stallDebounceMs = 150;                // Retained legacy field.
@@ -302,6 +302,8 @@ void loadAll() {
           if(fabsf(fc.maxForceN-5.00f)<0.001f) fc.maxForceN=3.00f;
           if(fc.contactStepCounts==20) fc.contactStepCounts=50;
           if(fc.positionSpeed==20) fc.positionSpeed=15;
+          if(fc.positionSpeed==15) fc.positionSpeed=61;
+          if(fc.positioningTimeoutMs==30000) fc.positioningTimeoutMs=8000;
           if(fc.graspSpeed==30) fc.graspSpeed=10;
           if(fc.releaseSpeed==30) fc.releaseSpeed=20;
           if(fc.travelSafetyMarginCounts==20) fc.travelSafetyMarginCounts=100;
@@ -332,6 +334,10 @@ void loadAll() {
   if(fc.contactStepCounts<10)fc.contactStepCounts=DEFAULT_CONTACT_STEP_COUNTS;
   if(fc.graspStepCounts<10)fc.graspStepCounts=DEFAULT_GRASP_STEP_COUNTS;
   if(fc.manualJogStepCounts<10)fc.manualJogStepCounts=SETUP_STEP_COUNTS;
+  // Clamp persisted CF35-12 speed commands to the documented 61-unit maximum.
+  fc.positionSpeed=min((uint16_t)61,max((uint16_t)1,fc.positionSpeed));
+  fc.graspSpeed=min((uint16_t)61,max((uint16_t)1,fc.graspSpeed));
+  fc.releaseSpeed=min((uint16_t)61,max((uint16_t)1,fc.releaseSpeed));
 }
 bool saveFsm() {
   FsmConfig copy;
@@ -538,6 +544,15 @@ int closeSign() { return fc.closePositive?1:-1; }
 long safeClosedPosition() { return (long)fc.touchPosition-(long)closeSign()*fc.travelSafetyMarginCounts; }
 long calibratedTravelCounts() { return fc.touchPositionValid&&fc.openZeroValid?labs((long)fc.touchPosition-fc.openZero):0; }
 bool travelValid() { return fc.openZeroValid&&fc.touchPositionValid&&calibratedTravelCounts()>(2L*fc.travelSafetyMarginCounts+2); }
+// Stop the continuous approach when the encoder enters the final 5% of the
+// calibrated OPEN-to-TOUCH travel. The safety margin can make this window wider.
+bool touchWindowReached() {
+  const long travel=calibratedTravelCounts();
+  if(travel<=0)return false;
+  const long window=max((long)lroundf((float)travel*0.05f),(long)fc.travelSafetyMarginCounts);
+  const long threshold=(long)fc.touchPosition-(long)closeSign()*window;
+  return closeSign()*((long)motor.position-threshold)>=0;
+}
 void setFault(const char* why) {
   setFsmEnabled(false);setMotionActive(false);motionOwner=MOTION_NONE;setupStepClosing=false;motorStop();setState(FAULT,why);setAction(why,false);
 }
@@ -566,6 +581,17 @@ void updatePositionMotion() {
     if(motionOwner==MOTION_SETUP_STEP||motionOwner==MOTION_SETUP_OPEN){setMotionActive(false);motionOwner=MOTION_NONE;motorStop();setAction("Servo step stopped: motor feedback is stale",false);}
     else setFault("Motor feedback lost during FSM movement");
     setupStepClosing=false;
+    return;
+  }
+  // The FSM approach is one continuous encoder-position command. Stop at the
+  // 5% calibrated TOUCH window and hold the measured position.
+  if(motionOwner==MOTION_FSM_CONTACT && touchWindowReached()) {
+    setMotionActive(false);motionOwner=MOTION_NONE;
+    holdForceReference=averageForce();setForceLossWarning(false);forceLossSamples=0;
+    if(!motorHoldAtCurrentPosition(fc.closeCurrentLimit)) {setFault("Could not hold position after reaching the TOUCH window");return;}
+    setFsmEnabled(true);
+    setState(HOLDING,"Saved TOUCH position window reached (within 5% of calibrated travel)");
+    setAction("Continuous approach complete — position hold active inside the 5% TOUCH window",true);
     return;
   }
   // Large manual close increments remain supervised while they move.
@@ -607,12 +633,7 @@ void updateFsm() {
   if(fsrSampleSeq!=lastProcessedFsrSeq) {
     lastProcessedFsrSeq=fsrSampleSeq;
     uint8_t active=0;float avg=averageForce(&active);
-    if(state==POSITIONING) {
-      if(allThreeFingersTouching()) {
-        if(motionActive){setMotionActive(false);motionOwner=MOTION_NONE;if(!motorHoldAtCurrentPosition(fc.closeCurrentLimit)){setFault("Could not hold position after three-finger contact");return;}}
-        setState(GRASPING,"All three finger groups detected contact");graspStableSamples=0;
-      }
-    } else if(state==GRASPING) {
+    if(state==GRASPING) {
       if(avg>=fc.graspForceN&&active>=fc.minimumActiveFsr) {if(graspStableSamples<255)graspStableSamples++;}
       else graspStableSamples=0;
       if(graspStableSamples>=max((uint8_t)1,fc.forceConsecutive)) {
@@ -631,9 +652,8 @@ void updateFsm() {
   if(motionActive)return;
   uint32_t elapsed=millis()-stateSince;
   if(state==POSITIONING) {
-    if(closeSign()*(safeClosedPosition()-(long)motor.position)<=0) {setFault("Empty-hand three-finger touch limit reached before an object was detected");return;}
-    if(elapsed>=fc.positioningTimeoutMs){setFault("Contact search timed out");return;}
-    commandNextFsmStep(false);
+    if(elapsed>=fc.positioningTimeoutMs) setFault("Continuous approach timed out before entering the 5% TOUCH window");
+    else if(!motionActive) setFault("Continuous approach stopped before entering the 5% TOUCH window");
   } else if(state==GRASPING) {
     if(closeSign()*(safeClosedPosition()-(long)motor.position)<=0) {setFault("Safe closed limit reached before target grasp force");return;}
     if(elapsed>=fc.graspTimeoutMs){setFault("Grasp force target timed out");return;}
@@ -660,8 +680,12 @@ void processControlCommand(const ControlCommand& cmd) {
     if(!travelValid()){setAction("Start blocked: save OPEN zero and the three-finger TOUCH position first",false);return;}
     if(labs((long)motor.position-fc.openZero)>fc.openPositionToleranceCounts){setAction("Start blocked: move the gripper to saved OPEN zero first",false);return;}
     if(maximumFsrForce()>=fc.maxForceN){setAction("Start blocked: reduce FSR force before closing",false);return;}
-    setFsmEnabled(true);contactStableSamples=0;graspStableSamples=0;setForceLossWarning(false);setState(POSITIONING,"Searching for simultaneous contact at all three fingers");
-    commandNextFsmStep(false);setAction("Grasp cycle started",true);return;
+    setFsmEnabled(true);contactStableSamples=0;graspStableSamples=0;setForceLossWarning(false);
+    setState(POSITIONING,"Continuous approach to saved TOUCH position; stop inside final 5% of calibrated travel");
+    if(!beginPositionMove(fc.touchPosition,min((uint16_t)61,max((uint16_t)1,fc.positionSpeed)),fc.closeCurrentLimit,MOTION_FSM_CONTACT,fc.positioningTimeoutMs)) {
+      setFault("Could not start continuous approach to saved TOUCH position");return;
+    }
+    setAction("Continuous approach started toward saved TOUCH position",true);return;
   }
   if(cmd.type==CMD_STEP_OPEN||cmd.type==CMD_STEP_CLOSE) {
     if(state!=IDLE||fsmEnabled||motionActive||motor.moving||motor.targetActive){setAction("Servo setup step blocked: FSM must be IDLE and the servo must be stationary",false);return;}
@@ -822,7 +846,7 @@ void saveConfigApi() {
   }
   const char* keys[]={"minimumActiveFsr","contactConsecutive","forceConsecutive","contactStepCounts","graspStepCounts","positionSpeed","graspSpeed","releaseSpeed","travelSafetyMarginCounts","positioningTimeoutMs","graspTimeoutMs","releaseTimeoutMs","slipConsecutive"};
   const long mins[]={1,1,1,10,10,1,1,1,20,1000,1000,1000,1};
-  const long maxs[]={6,10,10,250,100,1000,1000,1000,500,60000,30000,30000,10};
+  const long maxs[]={6,10,10,250,100,61,61,61,500,60000,30000,30000,10};
   long current[]={old.minimumActiveFsr,old.contactConsecutive,old.forceConsecutive,old.contactStepCounts,old.graspStepCounts,
     old.positionSpeed,old.graspSpeed,old.releaseSpeed,old.travelSafetyMarginCounts,old.positioningTimeoutMs,old.graspTimeoutMs,old.releaseTimeoutMs,old.slipConsecutive};
   long vals[sizeof(keys)/sizeof(keys[0])];
@@ -948,11 +972,11 @@ const cfgFields=[
  ['maxForceN','Maximum force per FSR','Hard software ceiling for any single FSR channel. Reaching it stops the FSM with a fault.','1.00–10.00 N',1.00,10.00,0.10],
  ['contactStepCounts','Contact-search step','Encoder counts per closing command while searching for all three finger contacts.','10–250 counts',10,250,5],
  ['graspStepCounts','Grasp step','Encoder counts per closing command while building force after all three fingers touch.','10–100 counts',10,100,5],
- ['positionSpeed','Contact-search speed','CF35-12 position-speed command. Lower values move more slowly.','1–1000 units',1,1000,1],
- ['graspSpeed','Grasp speed','CF35-12 position-speed command used for the small grasp-force steps.','1–1000 units',1,1000,1],
- ['releaseSpeed','Release speed','CF35-12 position-speed command used to return to the saved OPEN position.','1–1000 units',1,1000,1],
+ ['positionSpeed','Continuous approach speed','CF35-12 speed command for the single move to saved TOUCH. 61 units is approximately 44.7 RPM.','1–61 units',1,61,1],
+ ['graspSpeed','Position-hold speed','CF35-12 speed command used to hold the measured position after approach.','1–61 units',1,61,1],
+ ['releaseSpeed','Release speed','CF35-12 speed command used to return to the saved OPEN position.','1–61 units',1,61,1],
  ['travelSafetyMarginCounts','TOUCH safety margin','Stops automatic closing this many encoder counts before the saved TOUCH reference.','20–500 counts',20,500,5],
- ['positioningTimeoutMs','Contact-search timeout','Maximum time allowed to find simultaneous contact at all three fingers.','1–60 seconds',1000,60000,1000],
+ ['positioningTimeoutMs','Continuous approach timeout','Maximum time for the single move to enter the final 5% of the saved TOUCH travel.','1–60 seconds',1000,60000,1000],
  ['graspTimeoutMs','Grasp timeout','Maximum time allowed to reach the grasp-force target after contact.','1–30 seconds',1000,30000,1000],
  ['releaseTimeoutMs','Release timeout','Maximum time allowed to return to the saved OPEN zero.','1–30 seconds',1000,30000,1000],
  ['fsrSlipDropPct','Force-loss warning threshold','Percentage drop from the force recorded on entry to HOLDING that starts a force-loss warning. It does not tighten the grip.','10–80 %',10,80,1],
