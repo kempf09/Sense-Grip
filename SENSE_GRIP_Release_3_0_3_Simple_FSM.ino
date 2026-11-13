@@ -688,9 +688,18 @@ void updatePositionMotion() {
     return;
   }
   if(millis()-motionStartedMs>=motionTimeoutMs) {
-    MotionOwner failed=motionOwner;setMotionActive(false);motionOwner=MOTION_NONE;setupStepClosing=false;motorStop();
-    if(failed==MOTION_SETUP_STEP||failed==MOTION_SETUP_OPEN){setAction("Servo move timed out. Check the mechanism and motor link.",false);}
-    else setFault("FSM motor move timed out before reaching its encoder target");
+    MotionOwner failed=motionOwner;setMotionActive(false);motionOwner=MOTION_NONE;setupStepClosing=false;
+    if(failed==MOTION_POWER_DOWN) {
+      bool holdOk=motor.ok&&motorModeReady()&&fullAngleFeedbackReady()&&!motorFaultActive()&&
+        (uint32_t)(millis()-motorLastGoodMs)<=MOTOR_STALE_MS&&motorHoldAtCurrentPosition(fc.openCurrentLimit);
+      if(!holdOk)motorStop();
+      const char* why=holdOk?"Safe power down timed out before OPEN zero. Servo is holding its last measured position; inspect the mechanism.":"Safe power down timed out and position hold could not be verified. Inspect the mechanism before any further motion.";
+      setFsmEnabled(false);setState(FAULT,why);setAction(why,false);
+    } else {
+      motorStop();
+      if(failed==MOTION_SETUP_STEP||failed==MOTION_SETUP_OPEN)setAction("Servo move timed out. Check the mechanism and motor link.",false);
+      else setFault("FSM motor move timed out before reaching its encoder target");
+    }
   }
 }
 void updateFsm() {
@@ -783,7 +792,13 @@ void processControlCommand(const ControlCommand& cmd) {
     if(maximumFsrForce()>=fc.maxForceN){setAction("Safe power down blocked: maximum FSR force limit is active",false);return;}
     if(!saveSafeShutdownMarker(false)){setAction("Safe power down blocked: could not invalidate previous shutdown marker",false);return;}
     setFsmEnabled(false);setState(RELEASING,"Safe power down: moving to saved OPEN zero before torque disable");
-    if(!beginPositionMove(fc.openZero,fc.releaseSpeed,fc.openCurrentLimit,MOTION_POWER_DOWN,fc.releaseTimeoutMs)){setFault("Could not start safe power-down move to OPEN zero");return;}
+    if(!beginPositionMove(fc.openZero,fc.releaseSpeed,fc.openCurrentLimit,MOTION_POWER_DOWN,fc.releaseTimeoutMs)){
+      bool holdOk=motor.ok&&motorModeReady()&&fullAngleFeedbackReady()&&!motorFaultActive()&&
+        (uint32_t)(millis()-motorLastGoodMs)<=MOTOR_STALE_MS&&motorHoldAtCurrentPosition(fc.openCurrentLimit);
+      if(!holdOk)motorStop();
+      const char* why=holdOk?"Safe power-down move did not start. Servo is holding its current position.":"Safe power-down move did not start and a position hold could not be verified. Inspect the mechanism.";
+      setState(FAULT,why);setAction(why,false);return;
+    }
     setAction("Safe power down started. Torque will be disabled only after OPEN zero is verified.",true);return;
   }
   if(cmd.type==CMD_MOVE_OPEN) {
