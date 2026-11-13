@@ -1,5 +1,5 @@
 /*
-  SENSE-GRIP Release 3.0.3 — Calibrated travel defaults + simplified FSM settings
+  SENSE-GRIP Release 3.0.4-dev — Continuous position approach + 5% TOUCH window
   ESP32-S3-WROOM-2-N32R16V
   Hardware: 6x FSR402, 3x SEN0628, CF35-12 position servo
 
@@ -967,11 +967,11 @@ const cfgFields=[
  ['contactForceN','Contact threshold','Either FSR in each finger group can reach this force to register that finger as touching.','0.10–2.00 N',0.10,2.00,0.05],
  ['contactConsecutive','Contact debounce','Consecutive FSR samples required before a finger is marked as touching. 3 samples are about 60 ms.','1–10 samples',1,10,1],
  ['minimumActiveFsr','Minimum active FSR channels','Minimum number of individual FSR channels above 0.05 N before the grasp-force target can be accepted.','1–6 channels',1,6,1],
- ['graspForceN','Grasp force target','Average force across active FSR channels required to enter HOLDING.','0.25–5.00 N',0.25,5.00,0.05],
- ['forceConsecutive','Grasp stability samples','Consecutive samples that must meet the grasp-force target. 3 samples are about 60 ms.','1–10 samples',1,10,1],
+ ['graspForceN','Grasp force target','Legacy setting for a future force-based grasp phase; this branch enters HOLDING at the TOUCH position window.','0.25–5.00 N',0.25,5.00,0.05],
+ ['forceConsecutive','Grasp stability samples','Legacy setting for a future force-based grasp phase; not used by the position-window stop.','1–10 samples',1,10,1],
  ['maxForceN','Maximum force per FSR','Hard software ceiling for any single FSR channel. Reaching it stops the FSM with a fault.','1.00–10.00 N',1.00,10.00,0.10],
- ['contactStepCounts','Contact-search step','Encoder counts per closing command while searching for all three finger contacts.','10–250 counts',10,250,5],
- ['graspStepCounts','Grasp step','Encoder counts per closing command while building force after all three fingers touch.','10–100 counts',10,100,5],
+ ['contactStepCounts','Legacy contact step size','Not used by this branch. The FSM now sends one continuous position command.','10–250 counts',10,250,5],
+ ['graspStepCounts','Legacy grasp step size','Not used by this branch. The FSM now stops at the saved TOUCH position window.','10–100 counts',10,100,5],
  ['positionSpeed','Continuous approach speed','CF35-12 speed command for the single move to saved TOUCH. 61 units is approximately 44.7 RPM.','1–61 units',1,61,1],
  ['graspSpeed','Position-hold speed','CF35-12 speed command used to hold the measured position after approach.','1–61 units',1,61,1],
  ['releaseSpeed','Release speed','CF35-12 speed command used to return to the saved OPEN position.','1–61 units',1,61,1],
@@ -1493,7 +1493,7 @@ void setup() {
   controlQueue=xQueueCreate(8,sizeof(ControlCommand));
   WiFi.mode(WIFI_AP);WiFi.softAP("SENSE-GRIP","12341234");
   setupRoutes();server.begin();
-  Serial.print("SENSE-GRIP Release 3.0.3 · http://");Serial.println(WiFi.softAPIP());
+  Serial.print("SENSE-GRIP Release 3.0.4-dev · http://");Serial.println(WiFi.softAPIP());
   BaseType_t controlOk=xTaskCreatePinnedToCore(controllerTask,"controlCore1",8192,nullptr,3,&controlTaskHandle,1);
   BaseType_t sensorOk=xTaskCreatePinnedToCore(sensorTask,"sen0628Core1",8192,nullptr,1,&sensorTaskHandle,1);
   BaseType_t webOk=xTaskCreatePinnedToCore(webServerTask,"webCore0",12288,nullptr,1,&webTaskHandle,0);
