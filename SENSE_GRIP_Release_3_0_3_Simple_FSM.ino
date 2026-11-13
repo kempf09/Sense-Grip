@@ -517,7 +517,7 @@ void pollCf35Diagnostics() {
 }
 
 bool beginPositionMove(long target,uint16_t speed,uint16_t currentLimit,MotionOwner owner,uint32_t timeoutMs=POSITION_TIMEOUT_MS) {
-  if(!motorModeReady()||!motor.ok||motorFaultActive()||motionActive||state==FAULT)return false;
+  if(!motorModeReady()||!fullAngleFeedbackReady()||!motor.ok||motorFaultActive()||motionActive||state==FAULT)return false;
   if(owner!=MOTION_POWER_DOWN&&!saveSafeShutdownMarker(false))return false;
   if(target<-32767||target>32767)return false;
   if(!torque(1)||!motorPosition(target,speed,20,currentLimit))return false;
