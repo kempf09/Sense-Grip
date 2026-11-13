@@ -126,7 +126,7 @@ struct FsmConfig {
   uint16_t travelSafetyMarginCounts,contactStepCounts,graspStepCounts,manualJogStepCounts;
 };
 static constexpr uint32_t FSM_MAGIC=0x46534D34;
-static constexpr uint8_t FSM_CONFIG_VERSION=3;
+static constexpr uint8_t FSM_CONFIG_VERSION=4;
 FsmConfig fc;
 
 void defaultFsm() {
@@ -145,12 +145,12 @@ void defaultFsm() {
   fc.graspForceN = 1.00f;                 // Initial low-force grasp target.
   fc.fsrSlipDropPct = 25.0f;              // Warn after a 25% drop from HOLDING force.
   fc.contactForceN = 0.25f;               // Either FSR on each finger group can indicate contact.
-  fc.maxForceN = 3.00f;                   // Per-channel force ceiling for initial commissioning.
+  fc.maxForceN = 30.00f;                  // Per-channel software ceiling; FSR calibration range is 0–30 N.
   fc.minimumActiveFsr = 3;                // At least three individual FSR channels contribute.
   fc.contactMinActiveFsr = 1;             // Retained legacy field; finger contact is group-based.
   fc.graspSpeed = 10;                     // CF35-12 speed command units.
   fc.positionSpeed = 61;                  // Maximum documented CF35-12 speed command (~44.7 RPM).
-  fc.releaseSpeed = 20;                   // Moderate release speed.
+  fc.releaseSpeed = 61;                   // Maximum documented speed; avoids unnecessarily slow full-travel release.
   fc.closeCurrentLimit = 200;             // Existing CF35-12 current-limit command value.
   fc.openCurrentLimit = 260;              // Existing CF35-12 current-limit command value.
   fc.stallCurrentMa = 2700;                // Retained legacy field; not used by this simple FSM.
@@ -163,7 +163,7 @@ void defaultFsm() {
   fc.openPositionToleranceCounts = 8;
   fc.positioningTimeoutMs = 8000;          // Continuous approach timeout; full calibrated travel is about 5.6 s at max no-load speed.
   fc.graspTimeoutMs = 15000;
-  fc.releaseTimeoutMs = 20000;             // Allow the full return from TOUCH to OPEN.
+  fc.releaseTimeoutMs = 30000;             // 30 s allowance for loaded return to saved OPEN zero.
   fc.stallDebounceMs = 150;                // Retained legacy field.
   fc.touchPosition = 19202;
   fc.touchPositionValid = true;
@@ -300,6 +300,9 @@ void loadAll() {
           if(fabsf(fc.contactForceN-0.20f)<0.001f) fc.contactForceN=0.25f;
           if(fabsf(fc.graspForceN-2.00f)<0.001f) fc.graspForceN=1.00f;
           if(fabsf(fc.maxForceN-5.00f)<0.001f) fc.maxForceN=3.00f;
+          if(configVersion<4 && fabsf(fc.maxForceN-3.00f)<0.001f) fc.maxForceN=30.00f;
+          if(configVersion<4 && fc.releaseSpeed==20) fc.releaseSpeed=61;
+          if(configVersion<4 && fc.releaseTimeoutMs==20000) fc.releaseTimeoutMs=30000;
           if(fc.contactStepCounts==20) fc.contactStepCounts=50;
           if(fc.positionSpeed==20) fc.positionSpeed=15;
           if(fc.positionSpeed==15) fc.positionSpeed=61;
@@ -515,7 +518,7 @@ bool fsrCalibrationValid(uint8_t i) {
   if(i>=FSR_COUNT)return false;FsrConfig c;bool stored;
   portENTER_CRITICAL(&sharedMux);c=fsrCfg[i];stored=fsrCalStored[i];portEXIT_CRITICAL(&sharedMux);
   return stored&&isfinite(c.fixedOhms)&&c.fixedOhms>0&&isfinite(c.zeroMv)&&c.zeroMv>=0&&c.zeroMv<=1000&&
-    isfinite(c.f1)&&c.f1>=0.2f&&c.f1<=20.0f&&isfinite(c.f2)&&c.f2>=0.2f&&c.f2<=20.0f&&
+    isfinite(c.f1)&&c.f1>=0.2f&&c.f1<=30.0f&&isfinite(c.f2)&&c.f2>=0.2f&&c.f2<=30.0f&&
     isfinite(c.o1)&&c.o1>0&&c.o1<OPEN_OHMS&&isfinite(c.o2)&&c.o2>0&&c.o2<OPEN_OHMS&&c.o1!=c.o2&&c.f1!=c.f2;
 }
 bool allFsrCalibrated() { for(uint8_t i=0;i<FSR_COUNT;i++)if(!fsrCalibrationValid(i))return false;return true; }
@@ -839,7 +842,7 @@ void saveConfigApi() {
   FsmConfig next=old;float contact,grasp,maximum,slipDrop;
   if(!readFloatArg("contactForceN",old.contactForceN,0.10f,2.00f,contact)||
      !readFloatArg("graspForceN",old.graspForceN,0.25f,5.00f,grasp)||
-     !readFloatArg("maxForceN",old.maxForceN,1.00f,10.00f,maximum)||
+     !readFloatArg("maxForceN",old.maxForceN,1.00f,30.00f,maximum)||
      !readFloatArg("fsrSlipDropPct",old.fsrSlipDropPct,10.0f,80.0f,slipDrop)||
      !(contact<grasp&&grasp<maximum)) {
     json(false,"\"error\":\"force settings must satisfy contact < grasp < maximum; check all force ranges\"",400);return;
@@ -881,7 +884,7 @@ void apiFsrSave() {
   if(st!=IDLE||motion){json(false,"\"error\":\"FSR calibration is only available while the controller is stopped in IDLE\"",409);return;}
   int i=argL("id",-1);if(i<0||i>=FSR_COUNT){json(false,"\"error\":\"invalid FSR channel\"",400);return;}
   FsrConfig c={argF("r"),argF("f1"),argF("o1"),argF("f2"),argF("o2"),argF("z")};
-  if(!isfinite(c.fixedOhms)||!isfinite(c.zeroMv)||!isfinite(c.f1)||!isfinite(c.f2)||!isfinite(c.o1)||!isfinite(c.o2)||c.fixedOhms<=0||c.zeroMv<0||c.zeroMv>1000||c.f1<0.2f||c.f1>20||c.f2<0.2f||c.f2>20||c.o1<=0||c.o2<=0||c.o1>=OPEN_OHMS||c.o2>=OPEN_OHMS||c.o1==c.o2||c.f1==c.f2){json(false,"\"error\":\"invalid calibration values\"",400);return;}
+  if(!isfinite(c.fixedOhms)||!isfinite(c.zeroMv)||!isfinite(c.f1)||!isfinite(c.f2)||!isfinite(c.o1)||!isfinite(c.o2)||c.fixedOhms<=0||c.zeroMv<0||c.zeroMv>1000||c.f1<0.2f||c.f1>30||c.f2<0.2f||c.f2>30||c.o1<=0||c.o2<=0||c.o1>=OPEN_OHMS||c.o2>=OPEN_OHMS||c.o1==c.o2||c.f1==c.f2){json(false,"\"error\":\"invalid calibration values\"",400);return;}
   if(!saveOneFsr(i,c)){json(false,"\"error\":\"failed to save FSR calibration\"",500);return;}
   portENTER_CRITICAL(&sharedMux);fsrCfg[i]=c;fsrCalStored[i]=true;portEXIT_CRITICAL(&sharedMux);json(true,"\"saved\":"+String(i));
 }
@@ -942,7 +945,7 @@ const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta ch
 <section id="dash" class="page on"><h1>System overview</h1><div id="warning"></div><p class="note">Finger wiring: F1 = FSR6/GPIO10 + FSR2/GPIO1 · F2 = FSR4/GPIO5 + FSR3/GPIO4 · F3 = FSR5/GPIO6 + FSR1/GPIO2.</p><div class="grid"><div class="card"><h2>CF35-12 actuator</h2><div class="value" id="stateMain">--</div><div class="metric"><span>Encoder position</span><b id="pos">--</b></div><div class="metric"><span>Motor speed</span><b id="speed">--</b></div><div class="metric"><span>Current</span><b id="current">--</b></div><div class="metric"><span>Voltage</span><b id="voltage">--</b></div><div class="metric"><span>Temperature</span><b id="temperature">--</b></div></div><div class="card"><h2>Travel references</h2><div class="metric"><span>OPEN zero</span><b id="openZero">not set</b></div><div class="metric"><span>3-finger TOUCH</span><b id="touchPos">not set</b></div><div class="metric"><span>Available travel</span><b id="travel">--</b></div><button class="btn green" onclick="showPage('servo')">Servo setup</button></div></div><h2>Three-finger contact</h2><div id="fingerRow" class="fingerrow"></div><h2>FSR channels</h2><div id="fsrCards" class="fsrgrid"></div><h2>SEN0628 sensors</h2><div id="senCards" class="grid"></div></section>
 <section id="servo" class="page"><h1>Servo setup</h1><p class="note">The ESP32 controls the CF35-12 in position mode 0. There is no absolute-position input. Select a finite increment; the ESP32 creates the relative position command.</p><div class="grid"><div class="card"><h2>Live servo</h2><div class="value" id="servoPos">--</div><div class="metric"><span>Target</span><b id="servoTarget">--</b></div><div class="metric"><span>Mode</span><b id="servoMode">--</b></div><div class="metric"><span>Motion</span><b id="servoMoving">--</b></div><button class="btn secondary" onclick="cmd('moveOpen')">Move to saved OPEN zero</button></div><div class="card"><h2>Controller movement</h2><label for="servoStep">Movement increment (encoder counts)<select id="servoStep" onchange="updateStepLabels()"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1000</option></select></label><p class="note">Each press makes one relative move. Large increments (250–1000) are for coarse positioning only. Keep fingers and the mechanism clear. Use 20 or 50 counts when approaching contact. Closing stops at three-finger contact or the configured maximum FSR force. A saved TOUCH position also limits closing travel.</p><button class="btn" id="stepOpenBtn" onclick="cmdStep('stepOpen')">Step OPEN −20 counts</button><button class="btn green" id="stepCloseBtn" onclick="cmdStep('stepClose')">Step CLOSE +20 counts</button><hr class="divider"><button class="btn green" onclick="cmd('setOpenZero')">SET current position as OPEN zero</button><button class="btn amber" id="setTouchBtn" onclick="cmd('setTouch')">SAVE three-finger TOUCH position</button><p class="note">Finger 1: FSR6/GPIO10 + FSR2/GPIO1. Finger 2: FSR4/GPIO5 + FSR3/GPIO4. Finger 3: FSR5/GPIO6 + FSR1/GPIO2. TOUCH is saved only when all three finger groups indicate contact.</p></div></div><div class="card"><h2>Calibration status</h2><div class="metric"><span>OPEN zero</span><b id="servoOpenZero">not set</b></div><div class="metric"><span>Three-finger TOUCH position</span><b id="servoTouch">not set</b></div><div id="servoMessage" class="log">Waiting for controller.</div></div></section>
 <section id="fsm" class="page"><h1>Grasp state machine</h1><p class="note">Simple sequence: POSITIONING → GRASPING → HOLDING → RELEASING. SEN0628 acquisition is kept separate and is not used as an FSM trigger in this release.</p><div id="stateBar" class="statebar"></div><div class="grid"><div class="card"><h2>Cycle control</h2><button class="btn green" onclick="cmd('start')">START GRASP</button><button class="btn" onclick="cmd('release')">RELEASE</button><button class="btn amber" onclick="cmd('pause')">PAUSE</button><button class="btn secondary" onclick="cmd('reset')">RESET / ACKNOWLEDGE</button><button class="btn red" onclick="cmd('estop')">EMERGENCY STOP</button><div class="metric"><span>State time</span><b id="stateTime">--</b></div><div class="metric"><span>Force-loss warning</span><b id="forceLoss">--</b></div></div><div class="card"><h2>Current cycle</h2><div class="metric"><span>Average active FSR force</span><b id="avgForce">--</b></div><div class="metric"><span>Maximum channel force</span><b id="maxForce">--</b></div><div class="metric"><span>Active fingers</span><b id="activeFingers">--</b></div><div class="metric"><span>FSR calibration</span><b id="fsrCal">--</b></div><div class="metric"><span>Travel calibration</span><b id="travelCal">--</b></div></div></div><div class="card" style="margin-top:12px"><h2>Simple FSM settings</h2><p class="note">Settings apply to the automatic grasp cycle. Change them only when the controller is IDLE and the servo is stopped. Force values are based on your saved FSR calibration. Begin with the defaults below and change one parameter at a time.</p><form id="cfg" class="formgrid"></form><div class="cfg-actions"><button class="btn green" onclick="saveCfg()">Save settings</button><div id="cfgMsg" class="note">Changes are stored in ESP32 NVS.</div></div></div></section>
-<section id="fsrPage" class="page"><h1>FSR calibration</h1><p class="note">Six independent FSR402 channels. Keep the sensor unloaded when setting zero. Use two known force points for each channel.</p><div id="fsrCfg" class="grid"></div></section>
+<section id="fsrPage" class="page"><h1>FSR calibration</h1><p class="note">Six independent FSR402 channels, calibrated over 0–30 N. Keep the sensor unloaded when setting zero. Use two non-zero known force points (0.2–30 N) for each channel.</p><div id="fsrCfg" class="grid"></div></section>
 <section id="diag" class="page"><h1>Diagnostics</h1><div class="card"><div class="metric"><span>Web task core</span><b>0</b></div><div class="metric"><span>Sensor / motor controller core</span><b>1</b></div><div class="metric"><span>Three-sensor scan time</span><b id="scanTime">--</b></div><div id="lastAction" class="log">--</div></div><div class="grid" id="diagCards"></div><p class="note">Wi-Fi and HTTP handling run separately from the core-1 controller loop. HTTP handlers only read snapshots or queue commands. They do not access I²C, ADC or motor UART.</p></section>
 </main></div>
 <script>
@@ -969,12 +972,12 @@ const cfgFields=[
  ['minimumActiveFsr','Minimum active FSR channels','Minimum number of individual FSR channels above 0.05 N before the grasp-force target can be accepted.','1–6 channels',1,6,1],
  ['graspForceN','Grasp force target','Legacy setting for a future force-based grasp phase; this branch enters HOLDING at the TOUCH position window.','0.25–5.00 N',0.25,5.00,0.05],
  ['forceConsecutive','Grasp stability samples','Legacy setting for a future force-based grasp phase; not used by the position-window stop.','1–10 samples',1,10,1],
- ['maxForceN','Maximum force per FSR','Hard software ceiling for any single FSR channel. Reaching it stops the FSM with a fault.','1.00–10.00 N',1.00,10.00,0.10],
+ ['maxForceN','Maximum force per FSR','Hard software ceiling for any single FSR channel. Reaching it stops the FSM with a fault.','1.00–30.00 N',1.00,30.00,0.10],
  ['contactStepCounts','Legacy contact step size','Not used by this branch. The FSM now sends one continuous position command.','10–250 counts',10,250,5],
  ['graspStepCounts','Legacy grasp step size','Not used by this branch. The FSM now stops at the saved TOUCH position window.','10–100 counts',10,100,5],
  ['positionSpeed','Continuous approach speed','CF35-12 speed command for the single move to saved TOUCH. 61 units is approximately 44.7 RPM.','1–61 units',1,61,1],
  ['graspSpeed','Position-hold speed','CF35-12 speed command used to hold the measured position after approach.','1–61 units',1,61,1],
- ['releaseSpeed','Release speed','CF35-12 speed command used to return to the saved OPEN position.','1–61 units',1,61,1],
+ ['releaseSpeed','Release speed','CF35-12 speed command used to return to the saved OPEN position. Default 61 uses the maximum documented speed.','1–61 units',1,61,1],
  ['travelSafetyMarginCounts','TOUCH safety margin','Stops automatic closing this many encoder counts before the saved TOUCH reference.','20–500 counts',20,500,5],
  ['positioningTimeoutMs','Continuous approach timeout','Maximum time for the single move to enter the final 5% of the saved TOUCH travel.','1–60 seconds',1000,60000,1000],
  ['graspTimeoutMs','Grasp timeout','Maximum time allowed to reach the grasp-force target after contact.','1–30 seconds',1000,30000,1000],
