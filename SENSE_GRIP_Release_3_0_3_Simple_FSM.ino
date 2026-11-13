@@ -837,9 +837,9 @@ void apiStatus() {
   j+="]";json(true,j);
 }
 void requestCf35Diagnostics() {
-  if(!controllerTaskReady) { server.send(503,"application/json","{\\"ok\\":false,\\"error\\":\\"Controller not ready\\"}"); return; }
+  if(!controllerTaskReady) { server.send(503,"application/json","{\"ok\":false,\"error\":\"Controller not ready\"}"); return; }
   portENTER_CRITICAL(&sharedMux);cf35DiagRequested=true;portEXIT_CRITICAL(&sharedMux);
-  server.sendHeader("Cache-Control","no-store");server.send(202,"application/json","{\\"ok\\":true}");
+  server.sendHeader("Cache-Control","no-store");server.send(202,"application/json","{\"ok\":true}");
 }
 void apiCf35Diagnostics() {
   Cf35DiagSnapshot d;portENTER_CRITICAL(&sharedMux);d=cf35Diag;portEXIT_CRITICAL(&sharedMux);
