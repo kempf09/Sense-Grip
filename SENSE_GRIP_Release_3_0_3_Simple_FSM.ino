@@ -1,5 +1,5 @@
 /*
-  SENSE-GRIP Release 3.0.4-dev — Continuous position approach + 5% TOUCH window
+  SENSE-GRIP Release 3.0.5-dev — CF35 status-byte handling + safe OPEN-zero shutdown
   ESP32-S3-WROOM-2-N32R16V
   Hardware: 6x FSR402, 3x SEN0628, CF35-12 position servo
 
@@ -178,17 +178,22 @@ struct MotorReading {
   bool ok=false, moving=false, targetActive=false;
   int16_t position=0,targetPosition=0,speed=0,current=0;
   float degrees=0,mA=0,load=0,voltage=0;
-  uint8_t temp=0,status=0,mode=255;
+  uint8_t temp=0,status=0,responseStatus=0,mode=255;
   bool modeKnown=false;
 };
 MotorReading motor;
 struct Cf35DiagSnapshot {
   bool infoOk=false,limitsOk=false,phaseOk=false,modeOk=false,feedbackOk=false;
   uint8_t info[5]={0},limits[4]={0},phase=0,mode=255,feedback[18]={0};
+  uint8_t infoReplyStatus=0,limitsReplyStatus=0,phaseReplyStatus=0,modeReplyStatus=0,feedbackReplyStatus=0;
   uint32_t capturedMs=0;
 };
 Cf35DiagSnapshot cf35Diag;
 volatile bool cf35DiagRequested=false;
+uint8_t motorPhase=0;
+bool motorPhaseKnown=false;
+bool positionReferenceVerified=false;
+bool safeShutdownAtOpen=false;
 uint32_t motorLastGoodMs=0;
 bool lastMotorCommandOk=true;
 char lastMotorCommandError[96]="";
@@ -205,7 +210,7 @@ char lastAction[144]="Controller starting";
 bool lastActionOk=true;
 
 // One motor target can be active at a time. This is separate from the FSM state.
-enum MotionOwner : uint8_t { MOTION_NONE, MOTION_SETUP_STEP, MOTION_SETUP_OPEN, MOTION_FSM_CONTACT, MOTION_FSM_GRASP, MOTION_FSM_RELEASE };
+enum MotionOwner : uint8_t { MOTION_NONE, MOTION_SETUP_STEP, MOTION_SETUP_OPEN, MOTION_FSM_CONTACT, MOTION_FSM_GRASP, MOTION_FSM_RELEASE, MOTION_POWER_DOWN };
 MotionOwner motionOwner=MOTION_NONE;
 bool motionActive=false;
 bool setupStepClosing=false;
@@ -216,7 +221,7 @@ uint32_t motionTimeoutMs=POSITION_TIMEOUT_MS;
 // ---------------- FreeRTOS command hand-off ----------------
 enum ControlCommandType : uint8_t {
   CMD_START, CMD_RELEASE, CMD_PAUSE, CMD_RESET, CMD_ESTOP,
-  CMD_STEP_OPEN, CMD_STEP_CLOSE, CMD_SET_OPEN_ZERO, CMD_SET_TOUCH, CMD_MOVE_OPEN
+  CMD_STEP_OPEN, CMD_STEP_CLOSE, CMD_SET_OPEN_ZERO, CMD_SET_TOUCH, CMD_MOVE_OPEN, CMD_POWER_DOWN
 };
 struct ControlCommand { ControlCommandType type; uint16_t step; };
 TaskHandle_t webTaskHandle=nullptr, controlTaskHandle=nullptr, sensorTaskHandle=nullptr;
@@ -338,6 +343,7 @@ void loadAll() {
   if(p.begin("cf35",true)) {
     servoId=p.getUChar("id",1);
     servoBaud=p.getULong("baud",1000000);
+    safeShutdownAtOpen=p.getBool("safeopen",false);
     p.end();
   }
   // Enforce useful minimum increment sizes. Old Release 2.2.1 defaults were below gearbox backlash.
@@ -359,6 +365,15 @@ bool saveFsm() {
   p.end();
   return n==sizeof(copy)&&v==sizeof(uint8_t);
 }
+bool saveSafeShutdownMarker(bool atOpen) {
+  Preferences p;
+  if(!p.begin("cf35",false)) return false;
+  size_t n=p.putBool("safeopen",atOpen);
+  p.end();
+  if(n!=1) return false;
+  safeShutdownAtOpen=atOpen;
+  return true;
+}
 
 // ---------------- CF35-12 serial protocol (Core 1 only) ----------------
 struct Resp { bool ok=false; uint8_t id=0,status=0,n=0,data[MAXD]{}; char error[40]=""; };
@@ -374,19 +389,28 @@ bool getByte(uint8_t& v,uint32_t timeoutUs=25000) {
   while((uint32_t)(micros()-start)<timeoutUs) { if(Bus.available()){v=(uint8_t)Bus.read();return true;} taskYIELD(); }
   return false;
 }
+bool getByteUntil(uint8_t& value,uint32_t startUs,uint32_t timeoutUs) {
+  while((uint32_t)(micros()-startUs)<timeoutUs) {if(Bus.available()){value=(uint8_t)Bus.read();return true;}taskYIELD();}
+  return false;
+}
 Resp receivePacket(uint8_t wantId,uint8_t wantLength=255) {
-  Resp r; uint8_t a=0,b=0; uint32_t start=micros();
-  while((uint32_t)(micros()-start)<25000) { if(Bus.available()){b=(uint8_t)Bus.read();if(a==255&&b==255)break;a=b;} taskYIELD(); }
-  if(!(a==255&&b==255)){strcpy(r.error,"packet timeout");return r;}
-  uint8_t len=0;
-  if(!getByte(r.id)||!getByte(len)||!getByte(r.status)){strcpy(r.error,"short header");return r;}
-  if(len<2||len-2>MAXD){strcpy(r.error,"bad length");return r;}
-  r.n=len-2; uint8_t sum=r.id+len+r.status;
-  for(uint8_t i=0;i<r.n;i++){if(!getByte(r.data[i])){strcpy(r.error,"short data");return r;}sum+=r.data[i];}
-  uint8_t checksum=0;if(!getByte(checksum)){strcpy(r.error,"missing checksum");return r;}
-  r.ok=(uint8_t)(~sum)==checksum&&r.id==wantId&&(wantLength==255||r.n==wantLength);
-  if(!r.ok)strcpy(r.error,"checksum/id/length");
-  return r;
+  Resp result;const uint32_t startUs=micros();bool badChecksum=false,unexpected=false;
+  while((uint32_t)(micros()-startUs)<25000) {
+    uint8_t previous=0,current=0;bool header=false;
+    while(getByteUntil(current,startUs,25000)){if(previous==0xFF&&current==0xFF){header=true;break;}previous=current;}
+    if(!header)break;
+    Resp candidate;uint8_t len=0;
+    if(!getByteUntil(candidate.id,startUs,25000)||!getByteUntil(len,startUs,25000)||!getByteUntil(candidate.status,startUs,25000)){strcpy(result.error,"short response header");return result;}
+    if(len<2||len-2>MAXD){unexpected=true;continue;}
+    candidate.n=len-2;uint8_t sum=candidate.id+len+candidate.status;bool complete=true;
+    for(uint8_t i=0;i<candidate.n;i++){if(!getByteUntil(candidate.data[i],startUs,25000)){complete=false;break;}sum+=candidate.data[i];}
+    uint8_t checksum=0;if(!complete||!getByteUntil(checksum,startUs,25000)){strcpy(result.error,"short response data");return result;}
+    if((uint8_t)(~sum)!=checksum){badChecksum=true;continue;}
+    if(candidate.id!=wantId||(wantLength!=255&&candidate.n!=wantLength)){unexpected=true;continue;}
+    candidate.ok=true;return candidate;
+  }
+  if(badChecksum)strcpy(result.error,"response checksum error");else if(unexpected)strcpy(result.error,"response ID/length mismatch");else strcpy(result.error,"packet timeout");
+  return result;
 }
 Resp sendPacket(uint8_t id,uint8_t instruction,const uint8_t* payload,uint8_t n,bool reply=true,uint8_t replyLength=255) {
   while(Bus.available())Bus.read();
@@ -397,14 +421,16 @@ Resp sendPacket(uint8_t id,uint8_t instruction,const uint8_t* payload,uint8_t n,
   if(!reply){Resp r;r.ok=true;return r;}
   return receivePacket(id,replyLength);
 }
-bool readBus(uint8_t id,uint8_t address,uint8_t n,uint8_t* out,char* error,size_t errorCap=64) {
+bool readBus(uint8_t id,uint8_t address,uint8_t n,uint8_t* out,char* error,size_t errorCap=64,uint8_t* responseStatus=nullptr) {
   uint8_t q[2]={address,n};Resp r=sendPacket(id,READ,q,2,true,n);
-  if(!r.ok){strncpy(error,r.error,errorCap-1);error[errorCap-1]='\0';return false;}
+  if(!r.ok){if(errorCap){strncpy(error,r.error,errorCap-1);error[errorCap-1]='\0';}return false;}
+  if(responseStatus)*responseStatus=r.status;else if(r.status!=0){if(errorCap)snprintf(error,errorCap,"servo response status 0x%02X",r.status);return false;}
   memcpy(out,r.data,n);return true;
 }
 bool writeBus(uint8_t id,uint8_t address,const uint8_t* data,uint8_t n,char* error,size_t errorCap=64) {
   uint8_t q[MAXD];q[0]=address;memcpy(q+1,data,n);Resp r=sendPacket(id,WRITE,q,n+1,true,0);
-  if(!r.ok){strncpy(error,r.error,errorCap-1);error[errorCap-1]='\0';return false;}
+  if(!r.ok){if(errorCap){strncpy(error,r.error,errorCap-1);error[errorCap-1]='\0';}return false;}
+  if(r.status!=0){if(errorCap)snprintf(error,errorCap,"servo response status 0x%02X",r.status);return false;}
   return true;
 }
 uint16_t u16(const uint8_t* p){return p[0]|(uint16_t(p[1])<<8);}
@@ -422,6 +448,16 @@ bool readMotorMode() {
   return true;
 }
 bool motorModeReady() { return motor.modeKnown&&motor.mode==0; }
+bool readMotorPhase() {
+  uint8_t phase=0;char e[64]="";bool ok=readBus(servoId,18,1,&phase,e,sizeof(e));
+  portENTER_CRITICAL(&sharedMux);motorPhase=ok?phase:0;motorPhaseKnown=ok;portEXIT_CRITICAL(&sharedMux);return ok;
+}
+bool fullAngleFeedbackReady() {
+  uint8_t phase=0;bool known=false;portENTER_CRITICAL(&sharedMux);phase=motorPhase;known=motorPhaseKnown;portEXIT_CRITICAL(&sharedMux);return known&&(phase&0x10)!=0;
+}
+bool motorFaultActive() {
+  MotorReading m;portENTER_CRITICAL(&sharedMux);m=motor;portEXIT_CRITICAL(&sharedMux);return ((m.status|m.responseStatus)&0x2F)!=0;
+}
 bool torque(uint8_t value) { char e[64]="";bool ok=writeBus(servoId,40,&value,1,e,sizeof(e));if(!ok){strncpy(lastMotorCommandError,e,sizeof(lastMotorCommandError)-1);lastMotorCommandError[sizeof(lastMotorCommandError)-1]='\0';}return ok; }
 bool motorPosition(long pos,long speed,long acceleration,long currentLimit) {
   if(pos<-32767||pos>32767||speed<1||speed>32767||acceleration<0||acceleration>254||currentLimit<1||currentLimit>430)return false;
@@ -451,15 +487,15 @@ bool motorHoldAtCurrentPosition(uint16_t currentLimit) {
   return true;
 }
 bool pollMotor() {
-  uint8_t b[18];char e[64]="";
-  if(!readBus(servoId,56,18,b,e,sizeof(e))) {
+  uint8_t b[18],responseStatus=0;char e[64]="";
+  if(!readBus(servoId,56,18,b,e,sizeof(e),&responseStatus)) {
     portENTER_CRITICAL(&sharedMux);motor.ok=false;portEXIT_CRITICAL(&sharedMux);
     return false;
   }
   MotorReading next{};
   portENTER_CRITICAL(&sharedMux);next.mode=motor.mode;next.modeKnown=motor.modeKnown;portEXIT_CRITICAL(&sharedMux);
   next.position=sm15(u16(b));next.speed=sm15(u16(b+2));next.load=sm10(u16(b+4))*0.001f;
-  next.voltage=b[6]*0.1f;next.temp=b[7];next.status=b[9];
+  next.voltage=b[6]*0.1f;next.temp=b[7];next.status=b[9];next.responseStatus=responseStatus;
   next.moving=(b[10]&1)!=0;next.targetActive=(b[10]&2)!=0;next.targetPosition=sm15(u16(b+11));
   next.current=sm15(u16(b+13));next.mA=next.current*6.5f;next.degrees=next.position*0.087f;next.ok=true;
   portENTER_CRITICAL(&sharedMux);motor=next;motorLastGoodMs=millis();portEXIT_CRITICAL(&sharedMux);
@@ -471,17 +507,18 @@ bool pollMotor() {
 void pollCf35Diagnostics() {
   Cf35DiagSnapshot next{};
   char e[64]="";
-  next.infoOk=readBus(servoId,0,5,next.info,e,sizeof(e));
-  next.limitsOk=readBus(servoId,9,4,next.limits,e,sizeof(e));
-  next.phaseOk=readBus(servoId,18,1,&next.phase,e,sizeof(e));
-  next.modeOk=readBus(servoId,33,1,&next.mode,e,sizeof(e));
-  next.feedbackOk=readBus(servoId,56,18,next.feedback,e,sizeof(e));
+  next.infoOk=readBus(servoId,0,5,next.info,e,sizeof(e),&next.infoReplyStatus);
+  next.limitsOk=readBus(servoId,9,4,next.limits,e,sizeof(e),&next.limitsReplyStatus);
+  next.phaseOk=readBus(servoId,18,1,&next.phase,e,sizeof(e),&next.phaseReplyStatus);
+  next.modeOk=readBus(servoId,33,1,&next.mode,e,sizeof(e),&next.modeReplyStatus);
+  next.feedbackOk=readBus(servoId,56,18,next.feedback,e,sizeof(e),&next.feedbackReplyStatus);
   next.capturedMs=millis();
   portENTER_CRITICAL(&sharedMux);cf35Diag=next;portEXIT_CRITICAL(&sharedMux);
 }
 
 bool beginPositionMove(long target,uint16_t speed,uint16_t currentLimit,MotionOwner owner,uint32_t timeoutMs=POSITION_TIMEOUT_MS) {
-  if(!motorModeReady()||!motor.ok||motionActive||state==FAULT)return false;
+  if(!motorModeReady()||!motor.ok||motorFaultActive()||motionActive||state==FAULT)return false;
+  if(owner!=MOTION_POWER_DOWN&&!saveSafeShutdownMarker(false))return false;
   if(target<-32767||target>32767)return false;
   if(!torque(1)||!motorPosition(target,speed,20,currentLimit))return false;
   motionTarget=target;motionStartPosition=motor.position;motionStartedMs=millis();motionTimeoutMs=timeoutMs;motionOwner=owner;setMotionActive(true);
@@ -601,6 +638,8 @@ void beginRelease() {
 }
 void updatePositionMotion() {
   if(!motionActive)return;
+  if(motorFaultActive()){setFault("CF35-12 reports an active servo protection/status fault");return;}
+  if(!motorModeReady()||!fullAngleFeedbackReady()){setFault("CF35-12 left verified position/full-angle feedback during motion");return;}
   if(!motor.ok||(uint32_t)(millis()-motorLastGoodMs)>MOTOR_STALE_MS){
     if(motionOwner==MOTION_SETUP_STEP||motionOwner==MOTION_SETUP_OPEN){setMotionActive(false);motionOwner=MOTION_NONE;motorStop();setAction("Servo step stopped: motor feedback is stale",false);}
     else setFault("Motor feedback lost during FSM movement");
@@ -639,6 +678,13 @@ void updatePositionMotion() {
     if(completed==MOTION_SETUP_STEP)setAction("Controller position step completed",true);
     else if(completed==MOTION_SETUP_OPEN)setAction("Reached saved OPEN zero",true);
     else if(completed==MOTION_FSM_RELEASE){motorStop();setFsmEnabled(false);setState(IDLE,"Release complete — OPEN zero reached");setAction("Release complete",true);}
+    else if(completed==MOTION_POWER_DOWN){
+      if(labs((long)motor.position-(long)fc.openZero)>(long)tol){setFault("Power-down stopped outside saved OPEN zero tolerance");return;}
+      if(!motorStop()){setFault("OPEN zero reached, but servo torque could not be disabled");return;}
+      setFsmEnabled(false);
+      if(saveSafeShutdownMarker(true)){portENTER_CRITICAL(&sharedMux);positionReferenceVerified=true;portEXIT_CRITICAL(&sharedMux);setState(IDLE,"Safe power down complete — saved OPEN zero reached and torque disabled");setAction("Safe power down complete. Servo is at saved OPEN zero and torque is disabled.",true);}
+      else{setState(IDLE,"OPEN zero reached and torque disabled; startup marker not saved");setAction("Servo is at OPEN zero and torque is disabled, but the startup marker was not saved. Automatic motion will be locked after restart.",false);}
+    }
     return;
   }
   if(millis()-motionStartedMs>=motionTimeoutMs) {
@@ -650,7 +696,8 @@ void updatePositionMotion() {
 void updateFsm() {
   if(!fsmEnabled||state==IDLE||state==PAUSED||state==FAULT)return;
   if(!motor.ok||(uint32_t)(millis()-motorLastGoodMs)>MOTOR_STALE_MS){setFault("Motor link lost during FSM cycle");return;}
-  if(!motorModeReady()){setFault("CF35-12 is not in verified position mode 0");return;}
+  if(motorFaultActive()){setFault("CF35-12 reports an active servo protection/status fault");return;}
+  if(!motorModeReady()||!fullAngleFeedbackReady()){setFault("CF35-12 is not in verified position mode 0");return;}
   if(maximumFsrForce()>=fc.maxForceN){setFault("Maximum FSR force limit reached");return;}
 
   static uint32_t lastProcessedFsrSeq=0;
@@ -696,10 +743,11 @@ void processControlCommand(const ControlCommand& cmd) {
   if(cmd.type==CMD_PAUSE) {
     setFsmEnabled(false);setMotionActive(false);motionOwner=MOTION_NONE;setupStepClosing=false;motorStop();setState(PAUSED,"Paused by operator");setAction("FSM paused",true);return;
   }
-  if(cmd.type==CMD_RELEASE) { if(state==FAULT){setAction("Release blocked while FAULT is active. Reset first.",false);return;}if(!motor.ok||!motorModeReady()){setAction("Release blocked: motor link or position mode is not ready",false);return;}beginRelease();return; }
+  if(cmd.type==CMD_RELEASE) { if(state==FAULT){setAction("Release blocked while FAULT is active. Reset first.",false);return;}if(!motor.ok||!motorModeReady()||motorFaultActive()||!fullAngleFeedbackReady()||!positionReferenceVerified){setAction("Release blocked: require healthy servo, full-angle feedback and verified OPEN reference",false);return;}beginRelease();return; }
   if(cmd.type==CMD_START) {
     if(state!=IDLE||motionActive){setAction("Start blocked: controller is not idle",false);return;}
-    if(!motor.ok||!motorModeReady()){setAction("Start blocked: CF35-12 must be online in position mode 0",false);return;}
+    if(!motor.ok||!motorModeReady()||motorFaultActive()){setAction("Start blocked: CF35-12 must be healthy and online in position mode 0",false);return;}
+    if(!fullAngleFeedbackReady()||!positionReferenceVerified){setAction("Start blocked: full-angle feedback and OPEN reference must be verified after power-up",false);return;}
     if(!allFsrCalibrated()){setAction("Start blocked: calibrate all six FSR channels first",false);return;}
     if(!travelValid()){setAction("Start blocked: save OPEN zero and the three-finger TOUCH position first",false);return;}
     if(labs((long)motor.position-fc.openZero)>fc.openPositionToleranceCounts){setAction("Start blocked: move the gripper to saved OPEN zero first",false);return;}
@@ -713,6 +761,8 @@ void processControlCommand(const ControlCommand& cmd) {
   }
   if(cmd.type==CMD_STEP_OPEN||cmd.type==CMD_STEP_CLOSE) {
     if(state!=IDLE||fsmEnabled||motionActive||motor.moving||motor.targetActive){setAction("Servo setup step blocked: FSM must be IDLE and the servo must be stationary",false);return;}
+    if(cmd.type==CMD_STEP_CLOSE&&!positionReferenceVerified){setAction("Closing blocked: establish OPEN reference first",false);return;}
+    if(cmd.type==CMD_STEP_OPEN&&!positionReferenceVerified&&cmd.step>50){setAction("Unreferenced manual OPEN is limited to 20 or 50 count increments",false);return;}
     if(!motor.ok||!motorModeReady()){setAction("Servo setup step blocked: motor link or position mode is not ready",false);return;}
     if(cmd.type==CMD_STEP_CLOSE&&!allFsrCalibrated()){setAction("Closing step blocked: calibrate all six FSR channels first",false);return;}
     if(cmd.type==CMD_STEP_CLOSE&&allThreeFingersTouching()){setAction("All three finger groups already show contact. Save the TOUCH reference before closing further.",false);return;}
@@ -720,27 +770,38 @@ void processControlCommand(const ControlCommand& cmd) {
     uint16_t step=cmd.step;
     if(!isAllowedSetupStep(step)){setAction("Invalid setup step. Select 20, 50, 100, 250, 500 or 1000 counts.",false);return;}
     long target=(long)motor.position+(cmd.type==CMD_STEP_CLOSE?(long)closeSign()*step:-(long)closeSign()*step);
-    if(cmd.type==CMD_STEP_OPEN&&fc.openZeroValid&&closeSign()*(target-(long)fc.openZero)<0)target=fc.openZero;
+    if(cmd.type==CMD_STEP_OPEN&&positionReferenceVerified&&fc.openZeroValid&&closeSign()*(target-(long)fc.openZero)<0)target=fc.openZero;
     if(cmd.type==CMD_STEP_CLOSE&&fc.touchPositionValid&&closeSign()*(target-safeClosedPosition())>0)target=safeClosedPosition();
     if(target==motor.position){setAction("Servo is already at the calibrated travel limit",false);return;}
     if(!beginPositionMove(target,fc.positionSpeed,cmd.type==CMD_STEP_CLOSE?fc.closeCurrentLimit:fc.openCurrentLimit,MOTION_SETUP_STEP)) {setupStepClosing=false;setAction("Could not send servo setup step",false);}
     else {setupStepClosing=(cmd.type==CMD_STEP_CLOSE);setAction(cmd.type==CMD_STEP_CLOSE?"Controller closing step started":"Controller opening step started",true);}
     return;
   }
+  if(cmd.type==CMD_POWER_DOWN) {
+    bool activeHold=(state==HOLDING&&!motionActive&&!motor.moving);
+    if((state!=IDLE&&!activeHold)||motionActive||motor.moving||(motor.targetActive&&!activeHold)||!fc.openZeroValid||!motor.ok||!motorModeReady()||motorFaultActive()||!fullAngleFeedbackReady()||!positionReferenceVerified){setAction("Safe power down blocked: require IDLE or HOLDING, a healthy stationary servo, full-angle feedback and verified OPEN reference",false);return;}
+    if(maximumFsrForce()>=fc.maxForceN){setAction("Safe power down blocked: maximum FSR force limit is active",false);return;}
+    if(!saveSafeShutdownMarker(false)){setAction("Safe power down blocked: could not invalidate previous shutdown marker",false);return;}
+    setFsmEnabled(false);setState(RELEASING,"Safe power down: moving to saved OPEN zero before torque disable");
+    if(!beginPositionMove(fc.openZero,fc.releaseSpeed,fc.openCurrentLimit,MOTION_POWER_DOWN,fc.releaseTimeoutMs)){setFault("Could not start safe power-down move to OPEN zero");return;}
+    setAction("Safe power down started. Torque will be disabled only after OPEN zero is verified.",true);return;
+  }
   if(cmd.type==CMD_MOVE_OPEN) {
-    if(state!=IDLE||motionActive||motor.moving||motor.targetActive||!fc.openZeroValid||!motor.ok||!motorModeReady()){setAction("Move OPEN blocked: require IDLE, a stationary servo, motor mode 0 and a saved OPEN zero",false);return;}
+    if(state!=IDLE||motionActive||motor.moving||motor.targetActive||!fc.openZeroValid||!motor.ok||!motorModeReady()||motorFaultActive()||!fullAngleFeedbackReady()||!positionReferenceVerified){setAction("Move OPEN blocked: require healthy stationary servo, full-angle feedback and verified OPEN reference",false);return;}
     if(!beginPositionMove(fc.openZero,fc.releaseSpeed,fc.openCurrentLimit,MOTION_SETUP_OPEN,fc.releaseTimeoutMs))setAction("Could not move to OPEN zero",false);
-    else setAction("Moving to saved OPEN zero",true);
-    return;
+    else setAction("Moving to saved OPEN zero",true);return;
   }
   if(cmd.type==CMD_SET_OPEN_ZERO) {
-    if(state!=IDLE||motionActive||!motor.ok||!motorModeReady()||motor.moving||motor.targetActive){setAction("OPEN zero can only be saved while the motor is stationary in IDLE",false);return;}
+    if(state!=IDLE||motionActive||!motor.ok||!motorModeReady()||motorFaultActive()||motor.moving||motor.targetActive){setAction("OPEN zero can only be saved with a healthy stationary servo in IDLE",false);return;}
+    if(!fullAngleFeedbackReady()){setAction("OPEN zero not saved: register 18 bit 4 must confirm full-angle feedback",false);return;}
     FsmConfig old;portENTER_CRITICAL(&sharedMux);old=fc;fc.openZero=motor.position;fc.openZeroValid=true;fc.touchPosition=0;fc.touchPositionValid=false;portEXIT_CRITICAL(&sharedMux);
     if(!saveFsm()){portENTER_CRITICAL(&sharedMux);fc=old;portEXIT_CRITICAL(&sharedMux);setAction("Failed to save OPEN zero to NVS",false);return;}
-    setAction("OPEN zero saved. Three-finger TOUCH reference must now be measured again.",true);return;
+    if(!saveSafeShutdownMarker(false)){setAction("OPEN zero saved for this session, but startup marker could not be cleared. Verify zero after restart.",false);return;}
+    portENTER_CRITICAL(&sharedMux);positionReferenceVerified=true;portEXIT_CRITICAL(&sharedMux);
+    setAction("OPEN zero saved and verified for this power session. Measure three-finger TOUCH again.",true);return;
   }
   if(cmd.type==CMD_SET_TOUCH) {
-    if(state!=IDLE||motionActive||!fc.openZeroValid||!motor.ok||!motorModeReady()||motor.moving||motor.targetActive){setAction("TOUCH reference requires IDLE, a saved OPEN zero and a stationary motor",false);return;}
+    if(state!=IDLE||motionActive||!fc.openZeroValid||!motor.ok||!motorModeReady()||motorFaultActive()||!fullAngleFeedbackReady()||!positionReferenceVerified||motor.moving||motor.targetActive){setAction("TOUCH reference requires healthy servo, full-angle feedback and verified OPEN zero",false);return;}
     if(!allFsrCalibrated()){setAction("TOUCH reference blocked: all six FSR channels must be calibrated",false);return;}
     if(!allThreeFingersTouching()){setAction("TOUCH reference not saved: all three finger groups must show contact",false);return;}
     long travel=(long)closeSign()*((long)motor.position-fc.openZero);
@@ -795,10 +856,12 @@ bool calValidLocal(uint8_t i,const FsrConfig& c,bool stored) {
 void apiStatus() {
   MotorReading m;FsrReading fr[FSR_COUNT];SensorState ss[SENSOR_COUNT];FsmConfig c;FsrConfig cfg[FSR_COUNT];bool stored[FSR_COUNT];
   State st,prev;uint32_t stSince,lastGood;char reason[sizeof(transitionReason)],action[sizeof(lastAction)];bool actionOk,enabled,loss,activeMotion;
+  uint8_t phase;bool phaseKnown,referenceVerified;
   bool touches[3];uint8_t touchCounts[3];
   portENTER_CRITICAL(&sharedMux);
   m=motor;memcpy(fr,fsr,sizeof(fr));memcpy(ss,sensor,sizeof(ss));c=fc;memcpy(cfg,fsrCfg,sizeof(cfg));memcpy(stored,fsrCalStored,sizeof(stored));
   st=state;prev=previousState;stSince=stateSince;lastGood=motorLastGoodMs;activeMotion=motionActive;
+  phase=motorPhase;phaseKnown=motorPhaseKnown;referenceVerified=positionReferenceVerified;
   strncpy(reason,transitionReason,sizeof(reason)-1);reason[sizeof(reason)-1]='\0';
   strncpy(action,lastAction,sizeof(action)-1);action[sizeof(action)-1]='\0';actionOk=lastActionOk;enabled=fsmEnabled;loss=forceLossWarning;
   for(uint8_t f=0;f<3;f++){touches[f]=fingerTouchStable[f];touchCounts[f]=fingerTouchSamples[f];}
@@ -822,12 +885,17 @@ void apiStatus() {
     ",\"forceLossWarning\":"+(loss?"true":"false")+
     ",\"motorMode\":"+String(m.mode)+",\"motorModeKnown\":"+(m.modeKnown?"true":"false")+
     ",\"motorModeReady\":"+((m.modeKnown&&m.mode==0)?"true":"false")+
+    ",\"motorPhase\":"+String(phase)+",\"motorPhaseKnown\":"+(phaseKnown?"true":"false")+
+    ",\"fullAngleFeedback\":"+((phaseKnown&&(phase&0x10))?"true":"false")+
+    ",\"positionReferenceVerified\":"+(referenceVerified?"true":"false")+
+    ",\"servoFault\":"+(((m.status|m.responseStatus)&0x2F)?"true":"false")+
     ",\"motorStatusAgeMs\":"+String(millis()-lastGood)+
     ",\"motionActive\":"+(activeMotion?"true":"false")+
     ",\"motor\":{\"online\":"+(m.ok?"true":"false")+",\"position\":"+String(m.position)+
     ",\"targetPosition\":"+String(m.targetPosition)+",\"degrees\":"+String(m.degrees,2)+
     ",\"speed\":"+String(m.speed)+",\"mA\":"+String(m.mA,1)+",\"temp\":"+String(m.temp)+
-    ",\"voltage\":"+String(m.voltage,1)+",\"moving\":"+(m.moving?"true":"false")+",\"targetActive\":"+(m.targetActive?"true":"false")+"}";
+    ",\"voltage\":"+String(m.voltage,1)+",\"status\":"+String(m.status)+",\"responseStatus\":"+String(m.responseStatus)+
+    ",\"moving\":"+(m.moving?"true":"false")+",\"targetActive\":"+(m.targetActive?"true":"false")+"}";
   j+=",\"finger\":[";
   for(uint8_t f=0;f<3;f++){if(f)j+=',';uint8_t a=FINGER_FSR_MAP[f][0],b=FINGER_FSR_MAP[f][1];j+=String("{\"touching\":")+(touches[f]?"true":"false")+",\"forceN\":"+String(fmaxf(fr[a].force,fr[b].force),3)+",\"fsrA\":"+String(FSR_CHANNEL_NUMBER[a])+",\"gpioA\":"+String(FSR_PINS[a])+",\"fsrB\":"+String(FSR_CHANNEL_NUMBER[b])+",\"gpioB\":"+String(FSR_PINS[b])+"}";}
   j+="],\"fsr\":[";
@@ -844,11 +912,11 @@ void requestCf35Diagnostics() {
 void apiCf35Diagnostics() {
   Cf35DiagSnapshot d;portENTER_CRITICAL(&sharedMux);d=cf35Diag;portEXIT_CRITICAL(&sharedMux);
   String j="{\"ageMs\":"+String(d.capturedMs?millis()-d.capturedMs:0)+
-    ",\"infoOk\":"+(d.infoOk?"true":"false")+",\"info\":["+String(d.info[0])+","+String(d.info[1])+","+String(d.info[2])+","+String(d.info[3])+","+String(d.info[4])+"]"+
-    ",\"limitsOk\":"+(d.limitsOk?"true":"false")+",\"limits\":["+String(d.limits[0])+","+String(d.limits[1])+","+String(d.limits[2])+","+String(d.limits[3])+"]"+
-    ",\"phaseOk\":"+(d.phaseOk?"true":"false")+",\"phase\":"+String(d.phase)+
-    ",\"modeOk\":"+(d.modeOk?"true":"false")+",\"mode\":"+String(d.mode)+
-    ",\"feedbackOk\":"+(d.feedbackOk?"true":"false")+",\"feedback\":[";
+    ",\"infoOk\":"+(d.infoOk?"true":"false")+",\"infoReplyStatus\":"+String(d.infoReplyStatus)+",\"info\":["+String(d.info[0])+","+String(d.info[1])+","+String(d.info[2])+","+String(d.info[3])+","+String(d.info[4])+"]"+
+    ",\"limitsOk\":"+(d.limitsOk?"true":"false")+",\"limitsReplyStatus\":"+String(d.limitsReplyStatus)+",\"limits\":["+String(d.limits[0])+","+String(d.limits[1])+","+String(d.limits[2])+","+String(d.limits[3])+"]"+
+    ",\"phaseOk\":"+(d.phaseOk?"true":"false")+",\"phaseReplyStatus\":"+String(d.phaseReplyStatus)+",\"phase\":"+String(d.phase)+
+    ",\"modeOk\":"+(d.modeOk?"true":"false")+",\"modeReplyStatus\":"+String(d.modeReplyStatus)+",\"mode\":"+String(d.mode)+
+    ",\"feedbackOk\":"+(d.feedbackOk?"true":"false")+",\"feedbackReplyStatus\":"+String(d.feedbackReplyStatus)+",\"feedback\":[";
   for(uint8_t i=0;i<18;i++){if(i)j+=',';j+=String(d.feedback[i]);}
   j+="]}";server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",j);
 }
@@ -980,7 +1048,7 @@ const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta ch
 <header class="top"><span class="brand">SENSE-GRIP</span><span id="conn" class="pill bad">CONNECTING</span><span class="pill">State: <b id="topState">--</b></span><span class="pill">Encoder: <b id="topPos">--</b></span><span class="pill">Mode: <b id="topMode">--</b></span><button class="btn red" onclick="cmd('estop')">EMERGENCY STOP</button></header>
 <div class="layout"><nav id="nav"></nav><main>
 <section id="dash" class="page on"><h1>System overview</h1><div id="warning"></div><p class="note">Finger wiring: F1 = FSR6/GPIO10 + FSR2/GPIO1 · F2 = FSR4/GPIO5 + FSR3/GPIO4 · F3 = FSR5/GPIO6 + FSR1/GPIO2.</p><div class="grid"><div class="card"><h2>CF35-12 actuator</h2><div class="value" id="stateMain">--</div><div class="metric"><span>Encoder position</span><b id="pos">--</b></div><div class="metric"><span>Motor speed</span><b id="speed">--</b></div><div class="metric"><span>Current</span><b id="current">--</b></div><div class="metric"><span>Voltage</span><b id="voltage">--</b></div><div class="metric"><span>Temperature</span><b id="temperature">--</b></div></div><div class="card"><h2>Travel references</h2><div class="metric"><span>OPEN zero</span><b id="openZero">not set</b></div><div class="metric"><span>3-finger TOUCH</span><b id="touchPos">not set</b></div><div class="metric"><span>Available travel</span><b id="travel">--</b></div><button class="btn green" onclick="showPage('servo')">Servo setup</button></div></div><h2>Three-finger contact</h2><div id="fingerRow" class="fingerrow"></div><h2>FSR channels</h2><div id="fsrCards" class="fsrgrid"></div><h2>SEN0628 sensors</h2><div id="senCards" class="grid"></div></section>
-<section id="servo" class="page"><h1>Servo setup</h1><p class="note">The ESP32 controls the CF35-12 in position mode 0. There is no absolute-position input. Select a finite increment; the ESP32 creates the relative position command.</p><div class="grid"><div class="card"><h2>Live servo</h2><div class="value" id="servoPos">--</div><div class="metric"><span>Target</span><b id="servoTarget">--</b></div><div class="metric"><span>Mode</span><b id="servoMode">--</b></div><div class="metric"><span>Motion</span><b id="servoMoving">--</b></div><button class="btn secondary" onclick="cmd('moveOpen')">Move to saved OPEN zero</button></div><div class="card"><h2>Controller movement</h2><label for="servoStep">Movement increment (encoder counts)<select id="servoStep" onchange="updateStepLabels()"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1000</option></select></label><p class="note">Each press makes one relative move. Large increments (250–1000) are for coarse positioning only. Keep fingers and the mechanism clear. Use 20 or 50 counts when approaching contact. Closing stops at three-finger contact or the configured maximum FSR force. A saved TOUCH position also limits closing travel.</p><button class="btn" id="stepOpenBtn" onclick="cmdStep('stepOpen')">Step OPEN −20 counts</button><button class="btn green" id="stepCloseBtn" onclick="cmdStep('stepClose')">Step CLOSE +20 counts</button><hr class="divider"><button class="btn green" onclick="cmd('setOpenZero')">SET current position as OPEN zero</button><button class="btn amber" id="setTouchBtn" onclick="cmd('setTouch')">SAVE three-finger TOUCH position</button><p class="note">Finger 1: FSR6/GPIO10 + FSR2/GPIO1. Finger 2: FSR4/GPIO5 + FSR3/GPIO4. Finger 3: FSR5/GPIO6 + FSR1/GPIO2. TOUCH is saved only when all three finger groups indicate contact.</p></div></div><div class="card"><h2>Calibration status</h2><div class="metric"><span>OPEN zero</span><b id="servoOpenZero">not set</b></div><div class="metric"><span>Three-finger TOUCH position</span><b id="servoTouch">not set</b></div><div id="servoMessage" class="log">Waiting for controller.</div></div></section>
+<section id="servo" class="page"><h1>Servo setup</h1><p class="note">The ESP32 controls the CF35-12 in position mode 0. There is no absolute-position input. Select a finite increment; the ESP32 creates the relative position command.</p><div class="grid"><div class="card"><h2>Live servo</h2><div class="value" id="servoPos">--</div><div class="metric"><span>Target</span><b id="servoTarget">--</b></div><div class="metric"><span>Mode</span><b id="servoMode">--</b></div><div class="metric"><span>Motion</span><b id="servoMoving">--</b></div><button class="btn secondary" onclick="cmd('moveOpen')">Move to saved OPEN zero</button><button class="btn red" onclick="cmd('powerDown')">SAFE POWER DOWN · OPEN ZERO + TORQUE OFF</button><p class="note">Returns to saved OPEN zero (not raw encoder count 0), verifies position, then disables servo torque. It does not remove servo supply voltage.</p></div><div class="card"><h2>Controller movement</h2><label for="servoStep">Movement increment (encoder counts)<select id="servoStep" onchange="updateStepLabels()"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1000</option></select></label><p class="note">Each press makes one relative move. Large increments (250–1000) are for coarse positioning only. Keep fingers and the mechanism clear. Use 20 or 50 counts when approaching contact. Closing stops at three-finger contact or the configured maximum FSR force. A saved TOUCH position also limits closing travel.</p><button class="btn" id="stepOpenBtn" onclick="cmdStep('stepOpen')">Step OPEN −20 counts</button><button class="btn green" id="stepCloseBtn" onclick="cmdStep('stepClose')">Step CLOSE +20 counts</button><hr class="divider"><button class="btn green" onclick="cmd('setOpenZero')">SET current position as OPEN zero</button><button class="btn amber" id="setTouchBtn" onclick="cmd('setTouch')">SAVE three-finger TOUCH position</button><p class="note">Finger 1: FSR6/GPIO10 + FSR2/GPIO1. Finger 2: FSR4/GPIO5 + FSR3/GPIO4. Finger 3: FSR5/GPIO6 + FSR1/GPIO2. TOUCH is saved only when all three finger groups indicate contact.</p></div></div><div class="card"><h2>Calibration status</h2><div class="metric"><span>OPEN zero</span><b id="servoOpenZero">not set</b></div><div class="metric"><span>Three-finger TOUCH position</span><b id="servoTouch">not set</b></div><div class="metric"><span>Full-angle feedback</span><b id="servoFullAngle">unknown</b></div><div class="metric"><span>OPEN reference</span><b id="servoReference">not verified</b></div><div id="servoMessage" class="log">Waiting for controller.</div></div></section>
 <section id="fsm" class="page"><h1>Grasp state machine</h1><p class="note">Simple sequence: POSITIONING → GRASPING → HOLDING → RELEASING. SEN0628 acquisition is kept separate and is not used as an FSM trigger in this release.</p><div id="stateBar" class="statebar"></div><div class="grid"><div class="card"><h2>Cycle control</h2><button class="btn green" onclick="cmd('start')">START GRASP</button><button class="btn" onclick="cmd('release')">RELEASE</button><button class="btn amber" onclick="cmd('pause')">PAUSE</button><button class="btn secondary" onclick="cmd('reset')">RESET / ACKNOWLEDGE</button><button class="btn red" onclick="cmd('estop')">EMERGENCY STOP</button><div class="metric"><span>State time</span><b id="stateTime">--</b></div><div class="metric"><span>Force-loss warning</span><b id="forceLoss">--</b></div></div><div class="card"><h2>Current cycle</h2><div class="metric"><span>Average active FSR force</span><b id="avgForce">--</b></div><div class="metric"><span>Maximum channel force</span><b id="maxForce">--</b></div><div class="metric"><span>Active fingers</span><b id="activeFingers">--</b></div><div class="metric"><span>FSR calibration</span><b id="fsrCal">--</b></div><div class="metric"><span>Travel calibration</span><b id="travelCal">--</b></div></div></div><div class="card" style="margin-top:12px"><h2>Simple FSM settings</h2><p class="note">Settings apply to the automatic grasp cycle. Change them only when the controller is IDLE and the servo is stopped. Force values are based on your saved FSR calibration. Begin with the defaults below and change one parameter at a time.</p><form id="cfg" class="formgrid"></form><div class="cfg-actions"><button class="btn green" onclick="saveCfg()">Save settings</button><div id="cfgMsg" class="note">Changes are stored in ESP32 NVS.</div></div></div></section>
 <section id="fsrPage" class="page"><h1>FSR calibration</h1><p class="note">Six independent FSR402 channels, calibrated over 0–30 N. Keep the sensor unloaded when setting zero. Use two non-zero known force points (0.2–30 N) for each channel.</p><div id="fsrCfg" class="grid"></div></section>
 <section id="diag" class="page"><h1>Diagnostics</h1><div class="card"><div class="metric"><span>Web task core</span><b>0</b></div><div class="metric"><span>Sensor / motor controller core</span><b>1</b></div><div class="metric"><span>Three-sensor scan time</span><b id="scanTime">--</b></div><div id="lastAction" class="log">--</div></div><div class="card"><h2>CF35-12 read-only register survey</h2><p class="note">Read status only when requested. This reads the registers once. It does not write servo settings or command motor movement. Values are raw decimal register bytes.</p><button class="btn" id="cfDiagRead" type="button" onclick="readCf35Status()">Read status</button><div id="cfDiagMessage" class="note">No new diagnostic read requested.</div><div class="metric"><span>Capture age</span><b id="cfDiagAge">--</b></div><div class="metric"><span>Registers 0–4</span><b id="cfDiagInfo">--</b></div><div class="metric"><span>Registers 9–12</span><b id="cfDiagLimits">--</b></div><div class="metric"><span>Register 18 (phase)</span><b id="cfDiagPhase">--</b></div><div class="metric"><span>Register 33 (mode)</span><b id="cfDiagMode">--</b></div><div class="metric"><span>Registers 56–73</span><b id="cfDiagFeedback">--</b></div><p class="note">Register 65 is byte 9 of the feedback block. Registers 67–68 are bytes 11–12. Save the raw capture with the test notes.</p></div><div class="grid" id="diagCards"></div><p class="note">Wi-Fi and HTTP handling run separately from the core-1 controller loop. HTTP handlers only read snapshots or queue commands. They do not access I²C, ADC or motor UART.</p></section>
@@ -992,17 +1060,17 @@ $('nav').innerHTML=pages.map(([id,n],i)=>`<button class="${i===0?'sel':''}" oncl
 function showPage(id,b){document.querySelectorAll('.page').forEach(x=>x.classList.remove('on'));$(id).classList.add('on');document.querySelectorAll('nav button').forEach(x=>x.classList.remove('sel'));if(b)b.classList.add('sel');}
 function req(url,opt={}){return fetch(url,{cache:'no-store',...opt}).then(async r=>{let j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||'request failed');return j;});}
 function post(url,body=''){return req(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});}
-async function cmd(name){try{await post('/api/control/'+name);$('servoMessage').textContent='Command queued: '+name;}catch(e){$('servoMessage').textContent=e.message;}}
+async function cmd(name){if(name==='powerDown'&&!window.confirm('Move to saved OPEN zero and disable servo torque? Keep the gripper clear.'))return;try{await post('/api/control/'+name);$('servoMessage').textContent='Command queued: '+name;}catch(e){$('servoMessage').textContent=e.message;}}
 function updateStepLabels(){const n=Number($('servoStep').value);$('stepOpenBtn').textContent='Step OPEN −'+n+' counts';$('stepCloseBtn').textContent='Step CLOSE +'+n+' counts';}
 async function cmdStep(name){const step=Number($('servoStep').value);try{await post('/api/control/'+name,'step='+encodeURIComponent(step));$('servoMessage').textContent='Command queued: '+name+' · '+step+' counts';}catch(e){$('servoMessage').textContent=e.message;}}
 const stateNames=['IDLE','POSITIONING','GRASPING','HOLDING','RELEASING','PAUSED','FAULT'];
 function renderState(s){$('stateBar').innerHTML=stateNames.map(n=>`<span class="state ${s.state===n?'active':''}">${n}</span>`).join('');}
-function renderStatus(s){window.lastStatus=s;updateStepLabels();$('conn').textContent='ONLINE';$('conn').className='pill good';$('topState').textContent=s.state;$('topPos').textContent=s.motor.position;$('topMode').textContent=s.motorModeReady?'POSITION 0':'NOT READY';$('stateMain').textContent=s.state;$('pos').textContent=s.motor.position;$('speed').textContent=s.motor.speed;$('current').textContent=s.motor.mA.toFixed(0)+' mA';$('voltage').textContent=s.motor.voltage.toFixed(1)+' V';$('temperature').textContent=s.motor.temp+' °C';$('servoPos').textContent=s.motor.position;$('servoTarget').textContent=s.motor.targetPosition;$('servoMode').textContent=s.motorModeReady?'0 · verified':'unverified';$('servoMoving').textContent=(s.motionActive||s.motor.moving||s.motor.targetActive)?'MOVING':'STOPPED';$('openZero').textContent=s.openZeroValid?s.openZero:'not set';$('touchPos').textContent=s.touchPositionValid?s.touchPosition:'not set';$('travel').textContent=s.travelValid?s.travelCounts+' counts':'not calibrated';$('servoOpenZero').textContent=s.openZeroValid?s.openZero:'not set';$('servoTouch').textContent=s.touchPositionValid?s.touchPosition:'not set';$('setTouchBtn').disabled=!s.allThreeTouching;$('stepCloseBtn').disabled=s.allThreeTouching||!s.fsrCalibrationOk;$('servoMessage').textContent=s.lastAction;$('lastAction').textContent=s.lastAction;$('stateTime').textContent=s.stateMs+' ms';$('forceLoss').textContent=s.forceLossWarning?'FORCE LOSS':'--';$('avgForce').textContent=s.avgForce.toFixed(2)+' N';$('maxForce').textContent=s.maxFsrForce.toFixed(2)+' N';$('activeFingers').textContent=s.activeFingers+'/3';$('fsrCal').textContent=s.fsrCalibrationOk?'VALID':'INCOMPLETE';$('travelCal').textContent=s.travelValid?'VALID':'NOT SET';$('scanTime').textContent=window.lastData?.scan_us?((window.lastData.scan_us/1000).toFixed(1)+' ms'):'--';renderState(s);
+function renderStatus(s){window.lastStatus=s;updateStepLabels();$('conn').textContent='ONLINE';$('conn').className='pill good';$('topState').textContent=s.state;$('topPos').textContent=s.motor.position;$('topMode').textContent=s.motorModeReady?'POSITION 0':'NOT READY';$('stateMain').textContent=s.state;$('pos').textContent=s.motor.position;$('speed').textContent=s.motor.speed;$('current').textContent=s.motor.mA.toFixed(0)+' mA';$('voltage').textContent=s.motor.voltage.toFixed(1)+' V';$('temperature').textContent=s.motor.temp+' °C';$('servoPos').textContent=s.motor.position;$('servoTarget').textContent=s.motor.targetPosition;$('servoMode').textContent=s.motorModeReady?'0 · verified':'unverified';$('servoMoving').textContent=(s.motionActive||s.motor.moving||s.motor.targetActive)?'MOVING':'STOPPED';$('openZero').textContent=s.openZeroValid?s.openZero:'not set';$('touchPos').textContent=s.touchPositionValid?s.touchPosition:'not set';$('travel').textContent=s.travelValid?s.travelCounts+' counts':'not calibrated';$('servoOpenZero').textContent=s.openZeroValid?s.openZero:'not set';$('servoTouch').textContent=s.touchPositionValid?s.touchPosition:'not set';$('servoFullAngle').textContent=s.fullAngleFeedback?'VERIFIED · phase '+s.motorPhase:'NOT VERIFIED';$('servoReference').textContent=s.positionReferenceVerified?'VERIFIED':'NOT VERIFIED · re-save OPEN';$('setTouchBtn').disabled=!s.allThreeTouching;$('stepCloseBtn').disabled=s.allThreeTouching||!s.fsrCalibrationOk;$('servoMessage').textContent=s.lastAction;$('lastAction').textContent=s.lastAction;$('stateTime').textContent=s.stateMs+' ms';$('forceLoss').textContent=s.forceLossWarning?'FORCE LOSS':'--';$('avgForce').textContent=s.avgForce.toFixed(2)+' N';$('maxForce').textContent=s.maxFsrForce.toFixed(2)+' N';$('activeFingers').textContent=s.activeFingers+'/3';$('fsrCal').textContent=s.fsrCalibrationOk?'VALID':'INCOMPLETE';$('travelCal').textContent=s.travelValid?'VALID':'NOT SET';$('scanTime').textContent=window.lastData?.scan_us?((window.lastData.scan_us/1000).toFixed(1)+' ms'):'--';renderState(s);
 $('fingerRow').innerHTML=s.finger.map((f,i)=>`<div class="finger ${f.touching?'on':'off'}"><b>FINGER ${i+1}</b><div>${f.touching?'TOUCH':'NO CONTACT'}</div><small>FSR${f.fsrA}/GPIO${f.gpioA} + FSR${f.fsrB}/GPIO${f.gpioB}</small><br><small>${f.forceN.toFixed(2)} N</small></div>`).join('');
 $('fsrCards').innerHTML=s.fsr.map((f,i)=>`<div class="fsr"><b>FSR ${f.channel} · GPIO${f.gpio}</b><div class="value">${f.force===null?'--':f.force.toFixed(2)+' N'}</div><div class="small">${f.raw} raw · ${f.ohms.toFixed(0)} Ω · ${f.calibrated?'calibrated':'not calibrated'}</div></div>`).join('');
 $('senCards').innerHTML=s.sen.map((v,i)=>`<div class="card"><b>SEN0628 ${i+1}</b><div class="${v.online?'good':'bad'}">${v.online?'ONLINE':'NO RECENT FRAME'}</div><small class="muted">${v.ok} successful · ${v.err} errors</small></div>`).join('');
 $('diagCards').innerHTML=$('senCards').innerHTML;$('warning').innerHTML=!s.motorModeReady?'<div class="dangerBox">CF35-12 must report position mode 0. Motion is locked.</div>':!s.fsrCalibrationOk?'<div class="dangerBox">Calibrate all six FSR channels before grasping.</div>':!s.travelValid?'<div class="dangerBox">Set OPEN zero and three-finger TOUCH before starting the FSM.</div>':s.state==='FAULT'?`<div class="dangerBox">${s.reason} Use RESET only after checking the mechanism.</div>`:'';}
-function renderCf35Diagnostics(d){const fmt=(ok,v)=>ok?v.join(', '):'READ FAILED';$('cfDiagAge').textContent=d.ageMs+' ms';$('cfDiagInfo').textContent=fmt(d.infoOk,d.info);$('cfDiagLimits').textContent=fmt(d.limitsOk,d.limits);$('cfDiagPhase').textContent=d.phaseOk?String(d.phase):'READ FAILED';$('cfDiagMode').textContent=d.modeOk?String(d.mode):'READ FAILED';$('cfDiagFeedback').textContent=fmt(d.feedbackOk,d.feedback);}
+function renderCf35Diagnostics(d){const fmt=(ok,v)=>ok?v.join(', '):'READ FAILED';$('cfDiagAge').textContent=d.ageMs+' ms';$('cfDiagInfo').textContent=fmt(d.infoOk,d.info);$('cfDiagLimits').textContent=fmt(d.limitsOk,d.limits);$('cfDiagPhase').textContent=d.phaseOk?String(d.phase):'READ FAILED';$('cfDiagMode').textContent=d.modeOk?String(d.mode):'READ FAILED';$('cfDiagFeedback').textContent=fmt(d.feedbackOk,d.feedback);$('cfDiagMessage').textContent='Servo response ERROR bytes: info='+d.infoReplyStatus+', limits='+d.limitsReplyStatus+', phase='+d.phaseReplyStatus+', mode='+d.modeReplyStatus+', feedback='+d.feedbackReplyStatus+'. Register 65 status='+(d.feedbackOk?d.feedback[9]:'unavailable')+'.';}
 async function readCf35Status(){const b=$('cfDiagRead');b.disabled=true;$('cfDiagMessage').textContent='Reading CF35-12 registers…';try{await post('/api/cf35/read');await new Promise(resolve=>setTimeout(resolve,500));const d=await req('/api/cf35/diagnostics');renderCf35Diagnostics(d);$('cfDiagMessage').textContent='Read complete. Capture age: '+d.ageMs+' ms.';}catch(e){$('cfDiagMessage').textContent='Read failed: '+e.message;}finally{b.disabled=false;}}
 async function poll(){try{renderStatus(await req('/api/status'));}catch(e){$('conn').textContent='OFFLINE';$('conn').className='pill bad';}setTimeout(poll,1000);}
 const cfgFields=[
@@ -1479,6 +1547,7 @@ void setupRoutes() {
   server.on("/api/control/setOpenZero",HTTP_POST,[]{queueCommandApi(CMD_SET_OPEN_ZERO);});
   server.on("/api/control/setTouch",HTTP_POST,[]{queueCommandApi(CMD_SET_TOUCH);});
   server.on("/api/control/moveOpen",HTTP_POST,[]{queueCommandApi(CMD_MOVE_OPEN);});
+  server.on("/api/control/powerDown",HTTP_POST,[]{queueCommandApi(CMD_POWER_DOWN);});
   server.onNotFound([](){server.send(404,"text/plain","Not found");});
 }
 
@@ -1513,11 +1582,19 @@ void controllerTask(void*) {
   analogReadResolution(12);
   for(uint8_t i=0;i<FSR_COUNT;i++){pinMode(FSR_PINS[i],INPUT);analogSetPinAttenuation(FSR_PINS[i],ADC_11db);}
   busBegin(servoBaud);
-  bool stopOk=motorStop();
-  pollMotor();readMotorMode();sampleFsr();
-  if(!stopOk||!motor.ok)setFault("Boot motor stop or link check failed");
-  else if(!motorModeReady())setAction("Motor is online but not in position mode 0. Motion is locked.",false);
-  else setAction("Controller ready. Configure OPEN and three-finger TOUCH references.",true);
+  pollMotor();bool modeOk=readMotorMode();bool phaseOk=readMotorPhase();sampleFsr();
+  // Never disable torque or command a position at boot. Restore the multi-turn
+  // reference only after a clean OPEN-zero shutdown and matching full-angle feedback.
+  bool recoveredReference=safeShutdownAtOpen&&motor.ok&&modeOk&&phaseOk&&motorModeReady()&&fullAngleFeedbackReady()&&!motorFaultActive()&&
+    labs((long)motor.position-(long)fc.openZero)<=max((long)1,(long)fc.openPositionToleranceCounts);
+  portENTER_CRITICAL(&sharedMux);positionReferenceVerified=recoveredReference;portEXIT_CRITICAL(&sharedMux);
+  if(safeShutdownAtOpen&&!recoveredReference)saveSafeShutdownMarker(false);
+  if(!motor.ok)setAction("CF35-12 feedback read failed. Motion is locked.",false);
+  else if(motorFaultActive())setFault("CF35-12 reports a servo protection/status fault at boot");
+  else if(!modeOk||!motorModeReady())setAction("Motor is online but not in position mode 0. Motion is locked.",false);
+  else if(!phaseOk||!fullAngleFeedbackReady())setAction("Full-angle feedback is not verified (register 18 bit 4). Automatic travel is locked.",false);
+  else if(!recoveredReference)setAction("Position reference is not verified after power-up. Use small OPEN jogs, then save OPEN zero before automatic travel.",false);
+  else setAction("Startup reference verified at saved OPEN zero. Servo is ready.",true);
   uint32_t lastFsr=millis(),lastMotor=millis(),lastMode=millis();
   for(;;) {
     uint32_t now=millis();
@@ -1527,7 +1604,7 @@ void controllerTask(void*) {
     if(now-lastFsr>=FSR_PERIOD_MS){lastFsr=now;sampleFsr();}
     if(now-lastMotor>=MOTOR_PERIOD_MS){lastMotor=now;pollMotor();}
     bool readDiag=false;portENTER_CRITICAL(&sharedMux);readDiag=cf35DiagRequested;cf35DiagRequested=false;portEXIT_CRITICAL(&sharedMux);if(readDiag)pollCf35Diagnostics();
-    if(now-lastMode>=MODE_CHECK_MS){lastMode=now;if(!readMotorMode()&&fsmEnabled)setFault("CF35-12 mode register read failed during FSM motion");}
+    if(now-lastMode>=MODE_CHECK_MS){lastMode=now;bool modeStillOk=readMotorMode();bool phaseStillOk=readMotorPhase();if((!modeStillOk||!phaseStillOk||!fullAngleFeedbackReady())&&fsmEnabled)setFault("CF35-12 mode/full-angle feedback check failed during FSM motion");}
     updatePositionMotion();updateFsm();
     vTaskDelay(pdMS_TO_TICKS(1));
   }
