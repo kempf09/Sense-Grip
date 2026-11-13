@@ -1602,7 +1602,7 @@ void controllerTask(void*) {
     if(stopNow) processControlCommand({CMD_ESTOP,0});
     processControlQueue();
     if(now-lastFsr>=FSR_PERIOD_MS){lastFsr=now;sampleFsr();}
-    if(now-lastMotor>=MOTOR_PERIOD_MS){lastMotor=now;pollMotor();}
+    if(now-lastMotor>=MOTOR_PERIOD_MS){lastMotor=now;pollMotor();if(motor.ok&&motorFaultActive()&&state!=FAULT)setFault("CF35-12 status byte reports an active servo protection fault");}
     bool readDiag=false;portENTER_CRITICAL(&sharedMux);readDiag=cf35DiagRequested;cf35DiagRequested=false;portEXIT_CRITICAL(&sharedMux);if(readDiag)pollCf35Diagnostics();
     if(now-lastMode>=MODE_CHECK_MS){lastMode=now;bool modeStillOk=readMotorMode();bool phaseStillOk=readMotorPhase();if((!modeStillOk||!phaseStillOk||!fullAngleFeedbackReady())&&fsmEnabled)setFault("CF35-12 mode/full-angle feedback check failed during FSM motion");}
     updatePositionMotion();updateFsm();
