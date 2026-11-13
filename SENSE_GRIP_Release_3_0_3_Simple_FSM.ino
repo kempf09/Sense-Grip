@@ -737,7 +737,7 @@ void updateFsm() {
 void processControlCommand(const ControlCommand& cmd) {
   if(cmd.type==CMD_ESTOP){setFault("Emergency stop requested from web interface");return;}
   if(cmd.type==CMD_RESET) {
-    if(!motor.ok||!motorModeReady()){setAction("Reset blocked: motor link or position mode is not ready",false);return;}
+    if(!motor.ok||!motorModeReady()||motorFaultActive()){setAction("Reset blocked: clear the CF35-12 servo status fault and verify position mode 0 first",false);return;}
     setIdle("Fault/reset acknowledged by operator");return;
   }
   if(cmd.type==CMD_PAUSE) {
