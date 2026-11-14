@@ -1,0 +1,23 @@
+// Control task: ties sensors, FSM and servo together. Owns all servo bus traffic.
+#pragma once
+#include <stdint.h>
+#include "config_core.h"
+#include "fsm_core.h"
+
+struct ControlRequest {
+  enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG } kind;
+  Cmd cmd; int16_t speed; GripConfig cfg;
+};
+
+struct ControlStatus {
+  State state; State faultFrom; bool armed; bool openedSinceBoot;
+  char reason[96]; char faultReason[96];
+  Blocker blockers[10]; uint8_t nBlockers;
+  char lastActionMsg[96]; bool lastActionOk;
+};
+
+void controlBegin();                              // creates the request queue (8); call before tasks
+bool controlEnqueue(const ControlRequest& r);     // 0 wait; false when full
+void controlRequestEstop();                       // checked first every iteration -> Cmd::ESTOP
+ControlStatus controlGet();
+void controlTask(void*);
