@@ -17,6 +17,7 @@
 #include "servo_proto.h"
 #include "tof.h"
 #include "web.h"
+#include "web_pages.h"
 
 static WebServer server(80);
 
@@ -368,6 +369,7 @@ static void handleEstop() {
 
 // ---------------------------------------------------------------- setup
 void webBegin() {
+  server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", INDEX_HTML); });
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/tof", HTTP_GET, handleTof);
   server.on("/api/config", HTTP_GET, handleConfigGet);
