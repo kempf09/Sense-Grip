@@ -453,3 +453,52 @@ TEST(fsm_state_names) {
   CHECK(std::strcmp(stateName(State::PRE_TOUCH), "PRE_TOUCH") == 0);
   CHECK(std::strcmp(stateName(State::FAULT), "FAULT") == 0);
 }
+
+TEST(fsm_open_refused_on_servo_status_bits) {
+  Fsm f(cfg());
+  FsmInputs in = ready(); in.position = 5000; in.servoStatus = 0x20;
+  MotorAction a = cmd(f, in, Cmd::OPEN);
+  CHECK(f.state() == State::IDLE);
+  CHECK(a.kind == MotorAction::NONE);
+  CHECK(std::strstr(f.reason(), "Open refused: servo status") != nullptr);
+}
+
+TEST(fsm_open_refused_without_full_angle) {
+  Fsm f(cfg());
+  FsmInputs in = ready(); in.position = 5000; in.servoFullAngle = false;
+  MotorAction a = cmd(f, in, Cmd::OPEN);
+  CHECK(f.state() == State::IDLE);
+  CHECK(a.kind == MotorAction::NONE);
+  CHECK(std::strstr(f.reason(), "multi-turn") != nullptr);
+  CHECK(!f.openedSinceBoot());
+}
+
+TEST(fsm_failed_stop_retried_every_100ms) {
+  Fsm f = preTouchFsm(100);
+  FsmInputs in = ready(1000); in.position = 6000;
+  f.motorFailed("timeout");
+  CHECK(f.step(in).kind == MotorAction::STOP);   // first STOP right away
+  f.motorFailed("timeout");                      // that STOP failed too
+  for (uint32_t t = 1001; t < 1100; t++) { in.nowMs = t; CHECK(f.step(in).kind == MotorAction::NONE); }
+  in.nowMs = 1100;
+  CHECK(f.step(in).kind == MotorAction::STOP);   // retry after 100 ms
+  in.nowMs = 1300;                               // that STOP succeeded: no more retries
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(f.state() == State::FAULT);
+}
+
+TEST(fsm_fault_reason_survives_later_reasons) {
+  Fsm f = graspFsm(100);
+  FsmInputs in = ready(120);
+  in.anyFingerContact = true; in.position = 8000; in.maxForce = 3.1f;
+  f.step(in);
+  CHECK(std::strcmp(f.faultReason(), "FSR force limit") == 0);
+  in.maxForce = 0;
+  cmd(f, in, Cmd::OPEN);
+  CHECK(std::strstr(f.reason(), "Reset first") != nullptr);
+  cmd(f, in, Cmd::DISARM);
+  cmd(f, in, Cmd::ESTOP);
+  f.motorFailed("timeout");
+  CHECK(std::strcmp(f.faultReason(), "FSR force limit") == 0);
+  CHECK(f.faultFrom() == State::GRASP);
+}

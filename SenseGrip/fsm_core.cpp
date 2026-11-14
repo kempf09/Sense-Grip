@@ -7,6 +7,7 @@
 
 static constexpr uint32_t SERVO_STALE_MS = 100;
 static constexpr uint8_t SERVO_FAULT_BITS = 0x2F;
+static constexpr uint32_t STOP_RETRY_MS = 100;
 
 static MotorAction act(MotorAction::Kind k, int16_t speed = 0, int32_t pos = 0, uint16_t torque = 0) {
   return MotorAction{k, speed, pos, torque};
@@ -52,8 +53,10 @@ MotorAction Fsm::step(const FsmInputs& in) {
     if (a.kind == MotorAction::NONE && state_ == before) a = run(in);
   }
 
-  if (a.kind == MotorAction::NONE) a = pending_;   // STOP queued by motorFailed()
-  pending_ = NO_ACTION;
+  if (stopPending_ && a.kind == MotorAction::NONE && (int32_t)(nowMs_ - stopDueMs_) >= 0) {
+    stopPending_ = false;                       // set again if this STOP fails
+    a = act(MotorAction::STOP);
+  }
   return a;
 }
 
@@ -125,7 +128,10 @@ MotorAction Fsm::enter(State s, const char* why) {
     case State::OPEN:
       return act(MotorAction::MOVE, cfg_.openSpeed, cfg_.openZero, cfg_.openTorqueLimit);
     case State::FAULT:
-      if (prev != State::FAULT) faultFrom_ = prev;
+      if (prev != State::FAULT) {               // keep the original cause on re-entry
+        faultFrom_ = prev;
+        std::snprintf(faultReason_, sizeof faultReason_, "%s", why);
+      }
       armed_ = false;
       openedSinceBoot_ = false;                  // torque off: operator must press Open again
       return act(MotorAction::STOP);
@@ -137,8 +143,9 @@ void Fsm::motorFailed(const char* err) {
   bool wasFault = state_ == State::FAULT;
   std::snprintf(scratch_, sizeof scratch_, "servo command failed: %s", err ? err : "?");
   enter(State::FAULT, scratch_);
-  // Queue the STOP for the next step(); not again if STOP itself just failed in FAULT.
-  pending_ = wasFault ? NO_ACTION : act(MotorAction::STOP);
+  // STOP on the next step(); if we were already in FAULT (a STOP just failed), retry in 100 ms.
+  stopPending_ = true;
+  stopDueMs_ = wasFault ? nowMs_ + STOP_RETRY_MS : nowMs_;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +173,13 @@ MotorAction Fsm::onOpen(const FsmInputs& in) {
   if (state_ == State::OPEN) return NO_ACTION;
   if (state_ == State::FAULT) { setReason("Open refused: Reset first"); return NO_ACTION; }
   if (servoOffline(in)) { setReason("Open refused: servo offline or feedback stale"); return NO_ACTION; }
+  if (in.servoStatus & SERVO_FAULT_BITS) {
+    char bits[40];
+    svStatusText(in.servoStatus, bits, sizeof bits);
+    setReason("Open refused: servo status: %s", bits);
+    return NO_ACTION;
+  }
+  if (!in.servoFullAngle) { setReason("Open refused: servo multi-turn (full-angle) feedback off"); return NO_ACTION; }
   if (const char* p = limitsProblem(cfg_)) { setReason("Open refused: %s", p); return NO_ACTION; }
   return enter(State::OPEN, "Open requested");
 }

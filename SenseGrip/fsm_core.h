@@ -44,12 +44,15 @@ public:
   explicit Fsm(const GripConfig& c);
   void setConfig(const GripConfig& c);
   MotorAction step(const FsmInputs& in);   // at most one action per call
-  void motorFailed(const char* err);       // -> FAULT "servo command failed: <err>"; STOP on next step()
+  // -> FAULT "servo command failed: <err>"; STOP on next step(). If it fails again
+  // while in FAULT (e.g. the STOP itself), STOP is retried every 100 ms until one succeeds.
+  void motorFailed(const char* err);
   State state() const { return state_; }
   bool armed() const { return armed_; }
   bool openedSinceBoot() const { return openedSinceBoot_; }
   const char* reason() const { return reason_; }   // last transition / refusal text
   State faultFrom() const { return faultFrom_; }
+  const char* faultReason() const { return faultReason_; } // what caused the last FAULT entry
   uint8_t blockers(Blocker* out, uint8_t cap) const;  // from last step; "not armed" last
 
 private:
@@ -80,8 +83,10 @@ private:
   uint32_t fsrSeq_ = 0;
   uint32_t graspSeq_ = 0;
   uint8_t graspCount_ = 0;
-  MotorAction pending_{};                  // STOP queued by motorFailed()
+  bool stopPending_ = false;               // STOP queued by motorFailed()
+  uint32_t stopDueMs_ = 0;                 // ... not before this time
   char reason_[96];
+  char faultReason_[96] = "";
   char scratch_[64];                       // formatted safety-trip text
   Blocker blockers_[MAX_BLOCKERS];
   uint8_t nBlockers_ = 0;
