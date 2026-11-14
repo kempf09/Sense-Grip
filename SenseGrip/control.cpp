@@ -181,6 +181,8 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
     }
     case ControlRequest::CONFIG: {
       GripConfig n = r.cfg;
+      // Limits are owned by SET_OPEN/SET_CLOSE; the request may carry a stale snapshot.
+      n.openZero = c.cfg.openZero; n.closeLimit = c.cfg.closeLimit; n.limitsValid = c.cfg.limitsValid;
       clampConfig(n);
       if (n.limitsValid) {
         const char* prob = limitsProblem(n);

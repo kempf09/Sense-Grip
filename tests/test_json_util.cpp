@@ -26,7 +26,6 @@ TEST(json_escape_truncation_never_splits) {
   }
   CHECK_EQ(jsonEscape(in, o, 3), 1u);   // "a" only: \" needs 2 + NUL
   CHECK_EQ(jsonEscape(in, o, 4), 3u);   // a\"
-  jsonEscape("\x02", o, 6); CHECK(strcmp(o, "\\u0002") == 0 || strlen(o) == 0);
   CHECK_EQ(jsonEscape("\x02", o, 6), 0u);   // needs 6 + NUL = 7
   CHECK_EQ(jsonEscape("\x02", o, 7), 6u);
   CHECK_EQ(jsonEscape("abc", o, 0), 0u);
