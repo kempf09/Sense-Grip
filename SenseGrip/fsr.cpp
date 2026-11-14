@@ -113,10 +113,13 @@ bool fsrZero(uint8_t i) {
   if (i >= FSR_COUNT) return false;
   FsrCal c;
   float mv;
+  bool stored;
   portENTER_CRITICAL(&gMux);
   c = gCal[i];
+  stored = gStored[i];
   mv = gSnap.mv[i];   // already net of the current zero
   portEXIT_CRITICAL(&gMux);
+  if (!stored) return false;   // channel must be calibrated first; never persist defaults
   c.zeroMv += mv;
   return fsrSaveCal(i, c);   // validates (zeroMv <= 1000) before writing
 }

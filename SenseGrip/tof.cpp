@@ -45,18 +45,29 @@ void tofTask(void*) {
   bool online[TOF_COUNT] = {false, false, false};
   uint32_t lastTry[TOF_COUNT] = {0, 0, 0};
   uint32_t lastGood[TOF_COUNT] = {0, 0, 0};
+  uint32_t lastProgress[TOF_COUNT] = {0, 0, 0};  // init or good frame; drives dropout
   bool everGood[TOF_COUNT] = {false, false, false};
   PresenceTimer timer = {0, false};
 
   portENTER_CRITICAL(&gMux);
   for (uint8_t i = 0; i < TOF_COUNT; i++) gSnap.s[i].minMm = 0xFFFF;
   portEXIT_CRITICAL(&gMux);
-  for (uint8_t i = 0; i < TOF_COUNT; i++) {
-    online[i] = initSensor(i);
-    lastTry[i] = lastGood[i] = millis();
+
+  // Mark sensor i offline/online; stale data is invalidated either way.
+  auto setOnline = [&](uint8_t i, bool on, uint32_t now) {
+    online[i] = on;
+    everGood[i] = false;
+    lastProgress[i] = now;
     portENTER_CRITICAL(&gMux);
-    gSnap.s[i].online = online[i];
+    gSnap.s[i].online = on;
+    gSnap.s[i].minMm = 0xFFFF;
     portEXIT_CRITICAL(&gMux);
+  };
+
+  for (uint8_t i = 0; i < TOF_COUNT; i++) {
+    uint32_t now = millis();
+    lastTry[i] = now;
+    setOnline(i, initSensor(i), now);
     vTaskDelay(1);
   }
 
@@ -66,46 +77,47 @@ void tofTask(void*) {
       if (!online[i]) {
         if (now - lastTry[i] >= RETRY_MS) {
           lastTry[i] = now;
-          online[i] = initSensor(i);
-          lastGood[i] = millis();
-          portENTER_CRITICAL(&gMux);
-          gSnap.s[i].online = online[i];
-          portEXIT_CRITICAL(&gMux);
+          if (initSensor(i)) setOnline(i, true, millis());
         }
-        vTaskDelay(1);
-        continue;
-      }
-
-      uint16_t values[64] = {0};
-      uint8_t rc = lidar[i]->getAllData(values);
-      now = millis();
-      uint64_t mask;
-      portENTER_CRITICAL(&gMux);
-      mask = gMask[i];
-      portEXIT_CRITICAL(&gMux);
-
-      portENTER_CRITICAL(&gMux);
-      TofSensor& s = gSnap.s[i];
-      if (rc == 0) {
-        memcpy(s.mm, values, sizeof(values));
-        s.minMm = frameMinMm(values, mask);
-        s.lastGoodMs = now;
-        s.ok++;
-        lastGood[i] = now;
-        everGood[i] = true;
       } else {
-        s.err++;
-      }
-      portEXIT_CRITICAL(&gMux);
+        uint16_t values[64] = {0};
+        uint8_t rc = lidar[i]->getAllData(values);
+        now = millis();
+        uint64_t mask;
+        portENTER_CRITICAL(&gMux);
+        mask = gMask[i];
+        portEXIT_CRITICAL(&gMux);
+        uint16_t mn = rc == 0 ? frameMinMm(values, mask) : 0;
 
-      // Presence over all sensors, using the current detect settings.
+        portENTER_CRITICAL(&gMux);
+        TofSensor& s = gSnap.s[i];
+        if (rc == 0) {
+          memcpy(s.mm, values, sizeof(values));
+          s.minMm = mn;
+          s.lastGoodMs = now;
+          s.ok++;
+        } else {
+          s.err++;
+        }
+        portEXIT_CRITICAL(&gMux);
+        if (rc == 0) {
+          lastGood[i] = lastProgress[i] = now;
+          everGood[i] = true;
+        } else if (now - lastProgress[i] > 1000) {
+          lastTry[i] = now;
+          setOnline(i, false, now);
+        }
+      }
+
+      // Every pass, regardless of sensor state: refresh online count and presence.
+      now = millis();
       uint16_t mins[3];
       uint32_t ages[3];
       uint16_t detMm, hold;
       portENTER_CRITICAL(&gMux);
       for (int k = 0; k < 3; k++) {
         mins[k] = gSnap.s[k].minMm;
-        ages[k] = everGood[k] ? (now - lastGood[k]) : 0xFFFFFFFFu;
+        ages[k] = (online[k] && everGood[k]) ? (now - lastGood[k]) : 0xFFFFFFFFu;
       }
       detMm = gDetectMm;
       hold = gHoldMs;
@@ -117,15 +129,6 @@ void tofTask(void*) {
       gSnap.objectPresent = present;
       gSnap.online = cnt;
       portEXIT_CRITICAL(&gMux);
-
-      // Repeated failures: drop to offline so init retry kicks in.
-      if (rc != 0 && now - lastGood[i] > 1000) {
-        online[i] = false;
-        lastTry[i] = now;
-        portENTER_CRITICAL(&gMux);
-        gSnap.s[i].online = false;
-        portEXIT_CRITICAL(&gMux);
-      }
       vTaskDelay(1);
     }
   }
