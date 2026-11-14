@@ -107,11 +107,18 @@ bool writeRegs(uint8_t addr, const uint8_t* data, uint8_t n) {
 
 void put16(uint16_t v, uint8_t* p) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 
+bool torqueOff() { const uint8_t off = 0; return writeRegs(40, &off, 1); }
+
 bool ensureMode(uint8_t want) {
   bool known; uint8_t cur;
   portENTER_CRITICAL(&mux); known = snap.modeKnown; cur = snap.mode; portEXIT_CRITICAL(&mux);
   if (known && cur == want) return true;
-  if (!writeRegs(33, &want, 1)) return false;
+  torqueOff();  // best effort: never switch mode with torque on (stale goal would jump)
+  if (!writeRegs(33, &want, 1)) {
+    // The write may have taken effect even though the reply failed.
+    portENTER_CRITICAL(&mux); snap.modeKnown = false; snap.mode = 255; portEXIT_CRITICAL(&mux);
+    return false;
+  }
   portENTER_CRITICAL(&mux); snap.mode = want; snap.modeKnown = true; portEXIT_CRITICAL(&mux);
   return true;
 }
@@ -166,28 +173,39 @@ bool servoReadModeAndPhase() {
 }
 
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit) {
-  return ensureMode(0) && torqueOn() && writePositionBlock(position, speed, torqueLimit);
+  // Goal first, torque last, so torque never comes on with a stale goal.
+  if (ensureMode(0) && writePositionBlock(position, speed, torqueLimit) && torqueOn()) return true;
+  servoStop();  // best effort cleanup; lastError keeps the original failure unless stop also fails
+  return false;
 }
 
 bool servoHoldHere(uint16_t torqueLimit, uint16_t speed) {
-  bool online; int32_t pos;
-  portENTER_CRITICAL(&mux); online = snap.online; pos = snap.fb.position; portEXIT_CRITICAL(&mux);
+  bool online, fresh; int32_t pos;
+  portENTER_CRITICAL(&mux);
+  online = snap.online; pos = snap.fb.position;
+  fresh = everGood && (uint32_t)(millis() - lastGoodMs) <= 100;
+  portEXIT_CRITICAL(&mux);
   if (!online) { setError("hold: servo offline"); return false; }
+  if (!fresh) { setError("stale feedback"); return false; }
   return servoMoveTo(pos, speed, torqueLimit);
 }
 
 bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit) {
+  if (speedClosingPositive == 0) return servoHoldHere(torqueLimit, 1);
   if (runViaPosition) {
     const int32_t mag = speedClosingPositive < 0 ? -(int32_t)speedClosingPositive : speedClosingPositive;
     return servoMoveTo(speedClosingPositive > 0 ? closeLimitPos : openZeroPos,
                        (uint16_t)mag, torqueLimit);
   }
-  if (!ensureMode(1) || !torqueOn()) return false;
+  if (!ensureMode(1)) return false;
   const int32_t signedSpeed = closePositiveDir ? speedClosingPositive : -(int32_t)speedClosingPositive;
   uint8_t d[4];  // regs 44..45 torque limit, 46..47 goal speed
   put16(clampU16(torqueLimit, 1, 430), d);
   put16(svEncodeSM15(signedSpeed), d + 2);
-  return writeRegs(44, d, 4);
+  // Speed and torque limit first, torque last.
+  if (writeRegs(44, d, 4) && torqueOn()) return true;
+  servoStop();
+  return false;
 }
 
 bool servoStop() {
