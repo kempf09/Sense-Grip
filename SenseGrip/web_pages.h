@@ -152,7 +152,7 @@ function makeHm(host,id,title,clickable){
     var r=cv.getBoundingClientRect();
     var c=Math.floor((e.clientX-r.left)/r.width*8),rw=Math.floor((e.clientY-r.top)/r.height*8);
     if(c<0||c>7||rw<0||rw>7)return;
-    var k=+id.slice(-1);maskEdit[k]^=(1n<<BigInt(rw*8+c));drawTof();
+    if(!CFG)return;var k=+id.slice(-1);maskEdit[k]^=(1n<<BigInt(rw*8+c));drawTof();
   };
 }
 function drawHm(cv,sn,mask,nums){
@@ -235,7 +235,7 @@ function drawTof(){
       $('ch'+k+'t').textContent='S'+(k+1)+(mm===null?' offline':'  min '+mm+' mm');
     }
     if(tab==='tof'){
-      drawHm($('th'+k),sn,maskEdit[k],true);
+      drawHm($('th'+k),sn,CFG?maskEdit[k]:null,true);
       $('th'+k+'t').textContent='S'+(k+1)+(sn&&sn.online?'  min '+sn.minMm+' mm':' offline');
     }
   }
@@ -268,9 +268,12 @@ function fillForms(){
     else{el.value=v;el.dataset.o=String(v)}
   });
   for(var k=0;k<3;k++){maskLoaded[k]=BigInt('0x'+CFG['tofMask'+k]);maskEdit[k]=maskLoaded[k]}
+  $('maskSave').disabled=false;$('maskSave').title='';
   var L=$('limTxt');if(L)L.textContent=CFG.limitsValid?(CFG.openZero+' .. '+CFG.closeLimit):'not set';
 }
 function loadCfg(){return getJ('/api/config').then(function(j){CFG=j;fillForms();drawTof()}).catch(function(){})}
+$('maskSave').disabled=true;$('maskSave').title='config not loaded';
+setInterval(function(){if(!CFG)loadCfg()},2000);
 function saveForm(id,extra){
   var o={},n=0;
   document.querySelectorAll('#'+id+' [data-k]').forEach(function(el){
@@ -285,7 +288,8 @@ $('svSave').onclick=function(){saveForm('svCfg')};
 $('fsrSave').onclick=function(){saveForm('fsrCfg')};
 $('tofSave').onclick=function(){saveForm('tofCfg')};
 $('maskSave').onclick=function(){
-  var o={};for(var k=0;k<3;k++)if(maskLoaded[k]===null||maskEdit[k]!==maskLoaded[k])o['tofMask'+k]=hex16(maskEdit[k]);
+  if(!CFG)return;
+  var o={};for(var k=0;k<3;k++)if(CFG&&maskEdit[k]!==maskLoaded[k])o['tofMask'+k]=hex16(maskEdit[k]);
   if(!Object.keys(o).length){toast('No changes');return}
   post('/api/config',o).then(function(j){if(j){toast('Mask saved (queued)');setTimeout(loadCfg,500)}});
 };
