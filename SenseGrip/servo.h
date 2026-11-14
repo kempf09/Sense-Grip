@@ -18,7 +18,6 @@ bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit);
 bool servoHoldHere(uint16_t torqueLimit, uint16_t speed);
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit);
 bool servoStop();                                   // torque limit 0, then torque off; true = torque off acked
-bool servoForcePositionMode();                      // torque off, then mode reg 33 = 0 (operator button)
 bool servoBootStop();                               // same as servoStop (kept for the boot path)
 bool servoScanBaud(uint32_t& foundBaud);            // tries {1000000,500000,250000,128000,115200,76800,57600,38400}
 ServoSnapshot servoGet();

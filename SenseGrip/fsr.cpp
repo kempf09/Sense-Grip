@@ -58,7 +58,7 @@ void fsrBegin() {
   portEXIT_CRITICAL(&gMux);
 }
 
-void fsrSample(float contactN, uint8_t samples) {
+void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask) {
   FsrCal cal[FSR_COUNT];
   bool stored[FSR_COUNT];
   portENTER_CRITICAL(&gMux);
@@ -78,9 +78,12 @@ void fsrSample(float contactN, uint8_t samples) {
     next.force[i] = fsrForce(cal[i], next.ohms[i]);
     next.calibrated[i] = stored[i] && fsrCalValid(cal[i]);
   }
-  updateContacts(gDeb, next.force, contactN, samples);
+  // Raw readings stay visible for every channel; contact and force aggregates use enabled ones only.
+  float used[FSR_COUNT];
+  maskForces(next.force, enabledMask, used);
+  updateContacts(gDeb, used, contactN, samples);
   next.contacts = gDeb;
-  next.agg = aggregate(next.force, contactN);
+  next.agg = aggregate(used, contactN);
 
   portENTER_CRITICAL(&gMux);
   next.seq = gSnap.seq + 1;

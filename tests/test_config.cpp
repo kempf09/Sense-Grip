@@ -42,3 +42,13 @@ TEST(config_upgrade_from_v1_replaces_speeds_keeps_limits) {
   CHECK(c.limitsValid);
   CHECK_NEAR(c.maxForceN, 2.5f, 1e-6);
 }
+TEST(config_fsr_enabled_default_all_and_clamped) {
+  auto c = defaultConfig();
+  CHECK_EQ(c.fsrEnabled, (uint8_t)0x3F);
+  c.fsrEnabled = 0xFF;
+  CHECK(clampConfig(c));
+  CHECK_EQ(c.fsrEnabled, (uint8_t)0x3F);
+}
+TEST(config_v2_blob_is_v3_without_fsr_enabled) {
+  CHECK_EQ((unsigned)GRIP_CONFIG_V2_SIZE, (unsigned)__builtin_offsetof(GripConfig, tofMask) + 24u);
+}

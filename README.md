@@ -67,11 +67,8 @@ Notes:
   tick **Ignore limits while jogging** to go past them (one jog, then it unticks itself). Not
   available with "Run via position".
 - **Clear limits** (Servo tab) forgets OPEN zero and close limit so you can set them again.
-- **Set position mode (0)** (Servo tab) switches torque off and puts the servo in position mode.
-  Use it if the Servo tab shows a mode other than 0 while idle.
-- A ToF sensor with read errors keeps its last frame for up to 500 ms (ignored for triggering after
-  that). It is only restarted after 5 s without a good frame, and only shown offline when it also
-  stops answering on the I2C bus.
+- FSR tab: untick **Used** on a channel to make the FSM ignore it (not needed for arming, never
+  counts as contact or grasp force, ignored by the force limit). Readings are still shown.
   The Servo tab has its own E-STOP button, always enabled.
 - After a jog, Set OPEN zero, Set close limit, or a change of "Close = positive" or "Run via
   position", press Open again before arming.
@@ -147,7 +144,6 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/setClose` | Save current position as close limit |
 | `/api/servo/scan` | Find servo baud rate |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
-| `/api/servo/positionMode` | Torque off, servo mode 0 |
 | `/api/fsm/arm`, `/api/fsm/disarm` | Arm / disarm |
 | `/api/fsm/open` | Go to OPEN zero |
 | `/api/fsm/estop` | Emergency stop, FAULT |

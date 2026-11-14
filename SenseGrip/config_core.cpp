@@ -15,6 +15,7 @@ GripConfig defaultConfig() {
   c.preTouchTimeoutMs = 8000; c.graspTimeoutMs = 5000; c.openTimeoutMs = 15000;
   c.runViaPosition = false;
   for (auto& m : c.tofMask) m = ~0ULL;
+  c.fsrEnabled = 0x3F;
   return c;
 }
 
@@ -39,6 +40,7 @@ bool clampConfig(GripConfig& c) {
   bool ch = false;
   ch |= clampInt(c.openZero, -32767, 32767);
   ch |= clampInt(c.closeLimit, -32767, 32767);
+  if (c.fsrEnabled & ~0x3F) { c.fsrEnabled &= 0x3F; ch = true; }
   ch |= clampInt(c.approachSpeed, 1, SPEED_MAX);
   ch |= clampInt(c.graspSpeed, 1, SPEED_MAX);
   ch |= clampInt(c.openSpeed, 1, SPEED_MAX);

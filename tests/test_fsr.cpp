@@ -40,3 +40,16 @@ TEST(fsr_aggregate_counts_contact_channels) {
   CHECK_NEAR(a.fingerForce[2], 1.0, 1e-5);
   CHECK_NEAR(a.fingerForce[0], 0.3, 1e-5);
 }
+
+TEST(fsr_mask_zeroes_disabled_channels) {
+  const float f[6] = {1, 2, 3, 4, 5, 6};
+  float o[6];
+  maskForces(f, 0x3F, o);
+  for (int i = 0; i < 6; i++) CHECK_NEAR(o[i], f[i], 1e-6);
+  maskForces(f, 0x05, o);                       // channels 0 and 2 only
+  CHECK_NEAR(o[0], 1, 1e-6); CHECK_NEAR(o[1], 0, 1e-6); CHECK_NEAR(o[2], 3, 1e-6);
+  CHECK_NEAR(o[3], 0, 1e-6); CHECK_NEAR(o[4], 0, 1e-6); CHECK_NEAR(o[5], 0, 1e-6);
+  FsrAggregate a = aggregate(o, 0.25f);
+  CHECK_EQ(a.channelsInContact, (uint8_t)2);
+  CHECK_NEAR(a.maxForce, 3, 1e-6);
+}

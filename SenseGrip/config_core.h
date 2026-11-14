@@ -19,12 +19,15 @@ struct GripConfig {
   uint32_t preTouchTimeoutMs, graspTimeoutMs, openTimeoutMs; // 500..60000
   bool runViaPosition;
   uint64_t tofMask[3];                                  // bit z = zone z enabled
+  uint8_t fsrEnabled;                                   // bit i = FSR index i used by the FSM (added in v3; keep last)
 };
 
 GripConfig defaultConfig();
 // Config blobs saved with version 1 used speeds 1..61 (a wrong unit assumption,
 // ~1 RPM). Replaces those speeds with the current defaults; everything else is kept.
 void upgradeFromV1(GripConfig& c);
+// Size of the config blob saved by versions 1 and 2 (everything before fsrEnabled).
+constexpr unsigned GRIP_CONFIG_V2_SIZE = __builtin_offsetof(GripConfig, fsrEnabled);
 // Clamps every field into range; returns true if anything changed.
 bool clampConfig(GripConfig& c);
 // nullptr if ok, else a human-readable problem.

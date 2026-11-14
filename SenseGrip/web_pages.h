@@ -88,7 +88,7 @@ label.f{display:block;font-size:13px;color:var(--mu)}
    <div class="row"><label class="f">Jog speed (steps/s, 1-3400; 4096 = 1 rev/s)<input type="number" id="jogSpd" min="1" max="3400" value="400"></label><label class="f"><span>Ignore limits while jogging</span><input type="checkbox" id="jogIgn"></label></div>
    <div class="btns"><button class="b jog" id="jogC">Jog Close (hold)</button><button class="b jog" id="jogO">Jog Open (hold)</button></div>
    <div class="btns" style="margin-top:8px"><button class="b" id="setOpen">Set OPEN zero here</button><button class="b" id="setClose">Set close limit here</button></div>
-   <div class="btns" style="margin-top:8px"><button class="b" id="clearLim">Clear limits</button><button class="b" id="posMode">Set position mode (0)</button><button class="b" id="scan">Scan</button></div>
+   <div class="btns" style="margin-top:8px"><button class="b" id="clearLim">Clear limits</button><button class="b" id="scan">Scan</button></div>
    <p class="small">Jog is only accepted while IDLE and disarmed. After jogging or setting limits, press Open again before arming. Limits: <span id="limTxt">-</span></p>
    <button class="estop" id="estop2">E-STOP</button></div>
  </div>
@@ -270,6 +270,7 @@ function fillForms(){
   });
   for(var k=0;k<3;k++){maskLoaded[k]=BigInt('0x'+CFG['tofMask'+k]);maskEdit[k]=maskLoaded[k]}
   $('maskSave').disabled=false;$('maskSave').title='';
+  document.querySelectorAll('.fsrUse').forEach(function(c){c.checked=!!(CFG.fsrEnabled&(1<<+c.dataset.u))});
   var L=$('limTxt');if(L)L.textContent=CFG.limitsValid?(CFG.openZero+' .. '+CFG.closeLimit):'not set';
 }
 function loadCfg(){return getJ('/api/config').then(function(j){CFG=j;fillForms();drawTof()}).catch(function(){})}
@@ -297,7 +298,10 @@ $('maskSave').onclick=function(){
 
 /* ---------- Servo ---------- */
 function renderServo(){
-  var s=S.servo||{},rows=[['Online',s.online?'yes':'NO'],['Age',s.ageMs+' ms'],['Position',s.position],['Speed',s.speed],['Load',fx(s.load,1)],['Current',s.current],['Voltage',fx(s.voltage,1)+' V'],['Temp',s.temp+' C'],['Status',s.status+' / reply '+s.replyStatus+' ('+esc(s.statusText)+')'],['Mode',s.mode===null?'?':s.mode],['Full angle',s.fullAngle?'yes':'NO'],['Last error',esc(s.lastError||'-')]];
+  var s=S.servo||{},L=S.limits||{},rel=(L.valid&&s.position!=null)?(s.position-L.openZero)*(CFG&&CFG.closePositive===false?-1:1):null,
+      rows=[['Online',s.online?'yes':'NO'],['Age',s.ageMs+' ms'],['Position',s.position],
+      ['OPEN zero (saved)',L.valid?L.openZero:'not set'],['Close limit (saved)',L.valid?L.closeLimit:'not set'],
+      ['Position from OPEN zero',rel===null?'-':rel],['Speed',s.speed],['Load',fx(s.load,1)],['Current',s.current],['Voltage',fx(s.voltage,1)+' V'],['Temp',s.temp+' C'],['Status',s.status+' / reply '+s.replyStatus+' ('+esc(s.statusText)+')'],['Mode',s.mode===null?'?':s.mode],['Full angle',s.fullAngle?'yes':'NO'],['Last error',esc(s.lastError||'-')]];
   var h='';rows.forEach(function(r){h+='<tr><th>'+r[0]+'</th><td>'+r[1]+'</td></tr>'});
   $('svTbl').innerHTML=h;
 }
@@ -333,7 +337,6 @@ $('setOpen').onclick=function(){post('/api/servo/setOpen')};
 $('setClose').onclick=function(){post('/api/servo/setClose')};
 $('scan').onclick=function(){post('/api/servo/scan')};
 $('clearLim').onclick=function(){if(confirm('Clear OPEN zero and close limit? You will need to set both again.'))post('/api/servo/clearLimits')};
-$('posMode').onclick=function(){post('/api/servo/positionMode')};
 /* Ignore-limits is one-shot: it switches itself off after each jog release. */
 ['jogC','jogO'].forEach(function(id){$(id).addEventListener('pointerup',function(){setTimeout(function(){$('jogIgn').checked=false},0)})});
 
@@ -341,9 +344,16 @@ $('posMode').onclick=function(){post('/api/servo/positionMode')};
 var CAL=null;
 function fingerOf(i){for(var f=0;f<3;f++)if(FMAP[f][0]===i||FMAP[f][1]===i)return f+1;return '-'}
 function mkFsr(){
-  var h='<tr><th>Ch</th><th>Finger</th><th>raw</th><th>mV</th><th>ohm</th><th>N</th><th>Cal</th><th></th></tr>';
-  for(var i=0;i<6;i++)h+='<tr><td>'+FSR_PRINT[i]+'</td><td>'+fingerOf(i)+'</td><td id="fr'+i+'"></td><td id="fm'+i+'"></td><td id="fo'+i+'"></td><td id="ff'+i+'"></td><td id="fc'+i+'"></td><td><button class="b" data-z="'+i+'" style="padding:4px 10px">Zero</button></td></tr>';
+  var h='<tr><th>Ch</th><th>Finger</th><th>raw</th><th>mV</th><th>ohm</th><th>N</th><th>Cal</th><th>Used</th><th></th></tr>';
+  for(var i=0;i<6;i++)h+='<tr><td>'+FSR_PRINT[i]+'</td><td>'+fingerOf(i)+'</td><td id="fr'+i+'"></td><td id="fm'+i+'"></td><td id="fo'+i+'"></td><td id="ff'+i+'"></td><td id="fc'+i+'"></td><td><input type="checkbox" class="fsrUse" data-u="'+i+'" checked></td><td><button class="b" data-z="'+i+'" style="padding:4px 10px">Zero</button></td></tr>';
   $('fsrTbl').innerHTML=h;
+  /* Used checkboxes: bit i of fsrEnabled. Saved at once; the FSM ignores unticked channels. */
+  $('fsrTbl').onchange=function(e){
+    if(!e.target.classList.contains('fsrUse'))return;
+    if(!CFG){e.target.checked=!e.target.checked;toast('config not loaded');return}
+    var m=0;document.querySelectorAll('.fsrUse').forEach(function(c){if(c.checked)m|=1<<+c.dataset.u});
+    post('/api/config',{fsrEnabled:m}).then(function(j){if(j)toast('Saved (queued)');setTimeout(loadCfg,500)});
+  };
   $('fsrTbl').onclick=function(e){var z=e.target.dataset&&e.target.dataset.z;if(z!==undefined&&z!=='')post('/api/fsr/zero',{id:z}).then(function(j){if(j){toast('Zeroed');loadCal()}})};
 }
 function renderFsr(){

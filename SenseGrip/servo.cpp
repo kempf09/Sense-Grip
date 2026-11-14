@@ -256,18 +256,6 @@ bool servoStop() {
 
 bool servoBootStop() { return servoStop(); }
 
-bool servoForcePositionMode() {
-  if (!stopWrites()) return false;
-  const uint8_t zero = 0;
-  if (!writeRegs(33, &zero, 1)) {
-    portENTER_CRITICAL(&mux); snap.modeKnown = false; snap.mode = 255; portEXIT_CRITICAL(&mux);
-    return false;
-  }
-  portENTER_CRITICAL(&mux); snap.mode = 0; snap.modeKnown = true; portEXIT_CRITICAL(&mux);
-  clearError();
-  return true;
-}
-
 bool servoScanBaud(uint32_t& foundBaud) {
   static const uint32_t bauds[] = {1000000, 500000, 250000, 128000, 115200, 76800, 57600, 38400};
   const uint32_t original = servoBaud;

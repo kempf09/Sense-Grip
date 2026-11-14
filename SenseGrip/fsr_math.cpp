@@ -64,3 +64,7 @@ FsrAggregate aggregate(const float force[6], float thresholdN) {
   }
   return a;
 }
+
+void maskForces(const float force[6], uint8_t enabledMask, float out[6]) {
+  for (int i = 0; i < 6; i++) out[i] = (enabledMask & (1u << i)) ? force[i] : 0.0f;
+}

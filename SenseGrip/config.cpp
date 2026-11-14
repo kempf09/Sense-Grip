@@ -3,7 +3,7 @@
 #include <math.h>
 
 namespace {
-constexpr uint8_t CFG_VERSION = 2;   // 2: speeds in servo steps/s (v1 used 1..61)
+constexpr uint8_t CFG_VERSION = 3;   // 2: speeds in servo steps/s (v1 used 1..61); 3: + fsrEnabled
 
 // Release 3.0.3 FsmConfig layout, copied verbatim for migration (read-only).
 struct FsmConfig {
@@ -22,17 +22,22 @@ struct FsmConfig {
 };
 constexpr uint32_t FSM_MAGIC = 0x46534D34;
 
-// Returns true when sgcfg held a usable blob; sets upgraded when it was version 1.
+// Returns true when sgcfg held a usable blob; sets upgraded when it was an older version
+// (v1/v2 blobs are the v3 struct without the trailing fsrEnabled byte).
 bool loadNew(GripConfig& out, bool& upgraded) {
   upgraded = false;
   Preferences p;
   if (!p.begin("sgcfg", true)) return false;
   bool ok = false;
   const uint8_t ver = p.getUChar("ver", 0);
-  if ((ver == CFG_VERSION || ver == 1) && p.getBytesLength("cfg") == sizeof(GripConfig)) {
-    GripConfig tmp;
-    if (p.getBytes("cfg", &tmp, sizeof(tmp)) == sizeof(tmp)) {
-      if (ver == 1) { upgradeFromV1(tmp); upgraded = true; }
+  const size_t len = p.getBytesLength("cfg");
+  const size_t want = ver == CFG_VERSION ? sizeof(GripConfig)
+                    : (ver == 1 || ver == 2) ? GRIP_CONFIG_V2_SIZE : 0;
+  if (want && len == want) {
+    GripConfig tmp = defaultConfig();          // fields missing from older blobs keep defaults
+    if (p.getBytes("cfg", &tmp, want) == want) {
+      if (ver == 1) upgradeFromV1(tmp);
+      upgraded = ver != CFG_VERSION;
       out = tmp; ok = true;
     }
   }

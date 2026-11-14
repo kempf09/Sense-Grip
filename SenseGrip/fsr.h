@@ -9,7 +9,7 @@ struct FsrSnapshot {
 };
 
 void fsrBegin();                                   // ADC setup + load calibration from NVS
-void fsrSample(float contactN, uint8_t samples);   // control task, every 20 ms
+void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask);   // control task, every 20 ms; bit i = FSR i used
 FsrSnapshot fsrGet();
 FsrCal fsrGetCal(uint8_t i);
 bool fsrSaveCal(uint8_t i, const FsrCal& c);

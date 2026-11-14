@@ -114,8 +114,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
                    : r.kind == ControlRequest::SET_OPEN ? "set open"
                    : r.kind == ControlRequest::SET_CLOSE ? "set close"
                    : r.kind == ControlRequest::SCAN ? "scan"
-                   : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits"
-                   : r.kind == ControlRequest::SET_POSITION_MODE ? "set position mode" : "config";
+                   : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits" : "config";
   State st = c.fsm.state();
   if (st != State::IDLE && st != State::FAULT) {
     say(c, false, "%s only allowed in IDLE or FAULT (now %s)", what, stateName(st));
@@ -185,13 +184,6 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       say(c, true, "limits cleared: jog freely, then set OPEN zero and close limit again");
       return;
     }
-    case ControlRequest::SET_POSITION_MODE: {
-      jogStop(c);
-      if (!sv.online) { say(c, false, "set position mode refused: servo offline"); return; }
-      if (servoForcePositionMode()) say(c, true, "servo set to position mode 0 (torque off)");
-      else say(c, false, "set position mode failed: %s", servoGet().lastError);
-      return;
-    }
     case ControlRequest::SCAN: {
       jogStop(c);
       uint32_t found = 0;
@@ -241,7 +233,14 @@ FsmInputs buildInputs(uint32_t now, Cmd cmd) {
   in.servoFullAngle = sv.fullAngle; in.servoModeKnown = sv.modeKnown;
   in.position = sv.fb.position;
   bool any = false;
-  for (int i = 0; i < 6; i++) { in.fsrCalibrated[i] = fs.calibrated[i]; in.fsrForce[i] = fs.force[i]; }
+  // A channel the operator disabled is ignored by the FSM: not required to be calibrated,
+  // never "loaded at rest", never counted toward the force limit.
+  const uint8_t en = controlGetConfig().fsrEnabled;
+  for (int i = 0; i < 6; i++) {
+    const bool used = en & (1u << i);
+    in.fsrCalibrated[i] = fs.calibrated[i] || !used;
+    in.fsrForce[i] = used ? fs.force[i] : 0.0f;
+  }
   for (int f = 0; f < 3; f++) any = any || fs.contacts.stable[f];
   in.anyFingerContact = any;
   in.avgContactForce = fs.agg.avgContactForce;
@@ -355,7 +354,7 @@ void controlTask(void*) {
     }
 
     if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; servoPoll(); }
-    if ((uint32_t)(now - lastFsr) >= 20) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples); }
+    if ((uint32_t)(now - lastFsr) >= 20) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled); }
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     MotorAction a = c->fsm.step(buildInputs(now, cmd));
