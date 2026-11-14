@@ -155,11 +155,23 @@ MotorAction Fsm::handleCommand(const FsmInputs& in) {
   switch (in.cmd) {
     case Cmd::NONE:   return NO_ACTION;
     case Cmd::ESTOP:  return enter(State::FAULT, "E-stop");
-    case Cmd::DISARM: armed_ = false; setReason("disarmed"); return NO_ACTION;
+    case Cmd::DISARM: return onDisarm();
     case Cmd::ARM:    onArm(); return NO_ACTION;
     case Cmd::OPEN:   return onOpen(in);
     case Cmd::RESET:  return onReset(in);
   }
+  return NO_ACTION;
+}
+
+// Disarm while closing (START/PRE_TOUCH/GRASP) releases: behaves like Open.
+// Elsewhere it only clears the flag (MONITOR keeps holding until Open).
+MotorAction Fsm::onDisarm() {
+  armed_ = false;
+  if (state_ == State::START || state_ == State::PRE_TOUCH || state_ == State::GRASP) {
+    std::snprintf(scratch_, sizeof scratch_, "Disarmed during %s — opening", stateName(state_));
+    return enter(State::OPEN, scratch_);
+  }
+  setReason("disarmed");
   return NO_ACTION;
 }
 
@@ -250,7 +262,7 @@ void Fsm::computeBlockers(const FsmInputs& in) {
   }
   if (!in.servoFullAngle) addBlocker(BLK_FULL_ANGLE, "servo multi-turn (full-angle) feedback off");
   if (const char* p = limitsProblem(cfg_)) addBlocker(BLK_LIMITS, "%s", p);
-  if (!openedSinceBoot_) addBlocker(BLK_NOT_OPENED, "not at OPEN — press Open once after power-up");
+  if (!openedSinceBoot_) addBlocker(BLK_NOT_OPENED, "not at OPEN — press Open (after power-up, jog, new limits)");
   for (int i = 0; i < FSR_COUNT; i++) {
     if (!in.fsrCalibrated[i]) addBlocker(BLK_FSR_UNCALIBRATED, "FSR %d not calibrated", FSR_CHANNEL_NUMBER[i]);
     else if (state_ == State::IDLE && in.fsrForce[i] >= cfg_.contactForceN)
@@ -265,7 +277,7 @@ void Fsm::addBlocker(uint8_t id, const char* fmt, ...) {
   b.id = id;
   va_list ap;
   va_start(ap, fmt);
-  std::vsnprintf(b.text, sizeof b.text, fmt, ap);   // truncates at 47 chars
+  std::vsnprintf(b.text, sizeof b.text, fmt, ap);   // truncates at 63 chars
   va_end(ap);
 }
 

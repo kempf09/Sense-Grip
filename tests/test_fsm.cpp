@@ -406,11 +406,114 @@ TEST(fsm_estop_from_any_state) {
 }
 
 TEST(fsm_disarm_any_state) {
+  {  // IDLE: just clears the flag
+    Fsm f = openedFsm();
+    cmd(f, ready(20), Cmd::ARM);
+    CHECK(f.armed());
+    MotorAction a = cmd(f, ready(21), Cmd::DISARM);
+    CHECK(!f.armed());
+    CHECK(f.state() == State::IDLE);
+    CHECK(a.kind == MotorAction::NONE);
+  }
+  {  // MONITOR: keeps holding, flag cleared
+    Fsm f = graspFsm(100);
+    FsmInputs in = ready(120);
+    in.anyFingerContact = true; in.position = 8000;
+    in.avgContactForce = 1.5f; in.channelsInContact = 3;
+    for (uint32_t s = 101; s <= 103; s++) { in.fsrSeq = s; f.step(in); }
+    CHECK(f.state() == State::MONITOR);
+    MotorAction a = cmd(f, in, Cmd::DISARM);
+    CHECK(!f.armed());
+    CHECK(f.state() == State::MONITOR);
+    CHECK(a.kind == MotorAction::NONE);
+  }
+  {  // FAULT: stays FAULT
+    Fsm f = preTouchFsm(100);
+    FsmInputs in = ready(120); in.position = 6000;
+    cmd(f, in, Cmd::ESTOP);
+    MotorAction a = cmd(f, in, Cmd::DISARM);
+    CHECK(f.state() == State::FAULT);
+    CHECK(a.kind == MotorAction::NONE);
+  }
+  {  // GRASP: opens
+    Fsm f = graspFsm(100);
+    FsmInputs in = ready(120); in.anyFingerContact = true; in.position = 8000;
+    MotorAction a = cmd(f, in, Cmd::DISARM);
+    CHECK(!f.armed());
+    CHECK(f.state() == State::OPEN);
+    CHECK(a.kind == MotorAction::MOVE);
+    CHECK_EQ(a.position, 1968);
+    CHECK(std::strcmp(f.reason(), "Disarmed during GRASP — opening") == 0);
+  }
+  {  // START: opens too (never moved, but OPEN is harmless and consistent)
+    Fsm f = openedFsm();
+    cmd(f, ready(20), Cmd::ARM);
+    FsmInputs in = ready(21); in.objectPresent = true;
+    f.step(in);
+    CHECK(f.state() == State::START);
+    MotorAction a = cmd(f, in, Cmd::DISARM);
+    CHECK(f.state() == State::OPEN);
+    CHECK(a.kind == MotorAction::MOVE);
+    CHECK(std::strstr(f.reason(), "during START") != nullptr);
+  }
+}
+
+TEST(fsm_disarm_in_pretouch_opens) {
   Fsm f = preTouchFsm(100);
   FsmInputs in = ready(120); in.position = 6000;
-  cmd(f, in, Cmd::DISARM);
+  MotorAction a = cmd(f, in, Cmd::DISARM);
   CHECK(!f.armed());
-  CHECK(f.state() == State::PRE_TOUCH);
+  CHECK(f.state() == State::OPEN);
+  CHECK(a.kind == MotorAction::MOVE);
+  CHECK_EQ(a.position, 1968);
+  CHECK_EQ(a.speed, 61);
+  CHECK_EQ(a.torque, 260);
+  CHECK(std::strcmp(f.reason(), "Disarmed during PRE_TOUCH — opening") == 0);
+  in.position = 1970;                          // arrives at OPEN: IDLE, disarmed
+  CHECK(f.step(in).kind == MotorAction::HOLD);
+  CHECK(f.state() == State::IDLE);
+  CHECK(!f.armed());
+}
+
+TEST(fsm_invalidate_opened_brings_blocker_back) {
+  Fsm f = openedFsm();
+  f.step(ready(20));
+  CHECK(!hasBlocker(f, "press Open"));
+  f.invalidateOpened();
+  CHECK(!f.openedSinceBoot());
+  f.step(ready(21));
+  CHECK(hasBlocker(f, "press Open"));
+  cmd(f, ready(22), Cmd::ARM);
+  CHECK(!f.armed());
+  cmd(f, ready(23), Cmd::OPEN);                // Open again clears it
+  f.step(ready(24));                           // reaches OPEN -> IDLE
+  CHECK(f.openedSinceBoot());
+  f.step(ready(25));                           // blockers are computed at the start of step()
+  CHECK(!hasBlocker(f, "press Open"));
+}
+
+TEST(fsm_blocker_text_not_truncated) {
+  GripConfig c = cfg();
+  c.closeLimit = 1000;                         // wrong side of openZero
+  Fsm f(c);
+  f.step(ready());
+  CHECK(hasBlocker(f, "close limit is not on the closing side of OPEN zero"));
+  Blocker b[Fsm::MAX_REPORTED];
+  uint8_t n = f.blockers(b, Fsm::MAX_REPORTED);
+  CHECK(n <= Fsm::MAX_REPORTED);
+  for (uint8_t i = 0; i < n; i++) CHECK(std::strlen(b[i].text) < sizeof b[i].text - 1);
+}
+
+TEST(fsm_all_blockers_fit_reported_capacity) {
+  Fsm f(defaultConfig());
+  FsmInputs in = ready();
+  in.servoOnline = false; in.servoStatus = 0x2F; in.servoFullAngle = false; in.tofOnline = 0;
+  for (int i = 0; i < 6; i++) in.fsrCalibrated[i] = false;
+  f.step(in);
+  Blocker b[Fsm::MAX_REPORTED];
+  uint8_t n = f.blockers(b, Fsm::MAX_REPORTED);
+  CHECK_EQ(n, 13);                             // 12 blockers + "not armed"
+  CHECK(b[n - 1].id == BLK_NOT_ARMED);
 }
 
 TEST(fsm_uncalibrated_fsr_named) {

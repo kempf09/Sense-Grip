@@ -37,7 +37,7 @@ enum BlockerId : uint8_t {
   BLK_SERVO_OFFLINE = 1, BLK_SERVO_STATUS, BLK_FULL_ANGLE, BLK_LIMITS, BLK_NOT_OPENED,
   BLK_FSR_UNCALIBRATED, BLK_FSR_LOADED, BLK_NO_TOF, BLK_NOT_ARMED,
 };
-struct Blocker { uint8_t id; char text[48]; };
+struct Blocker { uint8_t id; char text[64]; };
 
 class Fsm {
 public:
@@ -54,15 +54,21 @@ public:
   State faultFrom() const { return faultFrom_; }
   const char* faultReason() const { return faultReason_; } // what caused the last FAULT entry
   uint8_t blockers(Blocker* out, uint8_t cap) const;  // from last step; "not armed" last
+  // Forget that the jaw reached OPEN (after a jog, new limits or a direction change):
+  // the "not at OPEN" blocker returns until Open completes again.
+  void invalidateOpened() { openedSinceBoot_ = false; }
+
+  static constexpr uint8_t MAX_BLOCKERS = 20;
+  static constexpr uint8_t MAX_REPORTED = MAX_BLOCKERS + 1;   // + "not armed"
 
 private:
-  static constexpr uint8_t MAX_BLOCKERS = 20;
 
   MotorAction run(const FsmInputs& in);        // the per-state switch
   MotorAction enter(State s, const char* why);  // entry actions
   MotorAction handleCommand(const FsmInputs& in);
   MotorAction onOpen(const FsmInputs& in);
   MotorAction onReset(const FsmInputs& in);
+  MotorAction onDisarm();
   void onArm();
   void computeBlockers(const FsmInputs& in);
   void addBlocker(uint8_t id, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
@@ -87,7 +93,7 @@ private:
   uint32_t stopDueMs_ = 0;                 // ... not before this time
   char reason_[96];
   char faultReason_[96] = "";
-  char scratch_[64];                       // formatted safety-trip text
+  char scratch_[96];                       // formatted safety-trip / abort text
   Blocker blockers_[MAX_BLOCKERS];
   uint8_t nBlockers_ = 0;
 };
