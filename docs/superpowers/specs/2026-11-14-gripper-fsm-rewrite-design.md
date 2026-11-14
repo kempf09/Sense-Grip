@@ -190,6 +190,7 @@ soft limits → FAULT. E-stop button → FAULT from any state.
 
 - servo offline / wrong baud
 - servo status fault (bits decoded to text: voltage, temperature, overload, …)
+- servo multi-turn (full-angle) feedback off (reg 18 bit 4) — required for position commands across 4+ turns
 - OPEN zero / close limit not set, or close limit ≤ open zero
 - not at OPEN position (must press Open once after boot)
 - FSR channel *n* not calibrated
