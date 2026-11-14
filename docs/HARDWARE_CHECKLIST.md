@@ -13,6 +13,15 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 6. **Real grasp.** Grasp a soft object. Press Open: IDLE, disarmed.
 7. **MONITOR hold.** When GRASP ends, the servo switches from speed mode to position hold.
    Torque is briefly off during the mode change. Check the object does not slip.
-8. **Scan.** Scan blocks the controller for about 0.2 s and E-stop is not serviced during it.
+8. **Scan.** Scan blocks the controller for up to about 0.6 s (8 baud rates) and E-stop is not serviced during it.
    Only scan with the gripper idle and clear, and keep a hand on the power switch while scanning: the software E-stop does not work during a scan.
 9. **Fallback.** If step 1 fails, tick `runViaPosition` (Servo tab) and repeat steps 3 to 6.
+10. **Multi-turn retained.** Jog the fingers about half closed. Power-cycle the servo and the ESP32
+    together. After boot, Last action reads "servo stopped at boot" and the fingers have not moved.
+    Before pressing Open, check that the position in the Servo tab is the same as before the power
+    cycle. If it changed, the servo does not keep its multi-turn count: from now on, after every
+    power-up, jog to fully open and Set OPEN zero, jog to fully closed and Set close limit, then press Open.
+11. **Boot stop.** Arm and trigger a close; during PRE_TOUCH press the ESP32 reset button. The servo
+    must stop within about a second of the reset (torque off) and the dashboard comes back in IDLE.
+12. **Disarm while closing.** Arm and trigger a close; press Disarm during PRE_TOUCH: state goes to
+    OPEN with "Disarmed during PRE_TOUCH — opening", then IDLE.

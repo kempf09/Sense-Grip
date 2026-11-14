@@ -44,7 +44,7 @@ main{padding:12px;max-width:1100px;margin:0 auto}
 button.b,.row button{background:var(--bd);color:var(--tx);border:1px solid #3d4b5c;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;touch-action:manipulation}
 button.b:disabled{opacity:.45;cursor:not-allowed}
 button.pri{background:var(--ac);border-color:var(--ac)}
-#estop{width:100%;padding:22px;font-size:26px;font-weight:900;background:#c4161c;border:3px solid #ff6b6f;color:#fff;border-radius:12px;margin-top:8px;cursor:pointer}
+.estop{width:100%;padding:22px;font-size:26px;font-weight:900;background:#c4161c;border:3px solid #ff6b6f;color:#fff;border-radius:12px;margin-top:8px;cursor:pointer}
 .btns{display:flex;gap:8px;flex-wrap:wrap}.btns .b{flex:1;min-width:90px}
 canvas{width:100%;aspect-ratio:1;background:#0c1117;border:1px solid var(--bd);border-radius:6px;display:block}
 .hm{text-align:center}.hm .small{margin-top:4px}
@@ -71,7 +71,7 @@ label.f{display:block;font-size:13px;color:var(--mu)}
    <div class="panel"><h2>Last action</h2><div id="last" class="small">-</div></div>
    <div class="panel"><div class="btns">
      <button class="b pri" id="bArm">Arm</button><button class="b" id="bOpen">Open</button><button class="b" id="bReset">Reset</button></div>
-     <button id="estop">E-STOP</button></div>
+     <button class="estop" id="estop">E-STOP</button></div>
   </div>
   <div>
    <div class="panel"><h2>Finger force</h2><div id="fingers"></div>
@@ -89,7 +89,8 @@ label.f{display:block;font-size:13px;color:var(--mu)}
    <div class="btns"><button class="b jog" id="jogC">Jog Close (hold)</button><button class="b jog" id="jogO">Jog Open (hold)</button></div>
    <div class="btns" style="margin-top:8px"><button class="b" id="setOpen">Set OPEN zero here</button><button class="b" id="setClose">Set close limit here</button></div>
    <div class="btns" style="margin-top:8px"><button class="b" id="scan">Scan</button></div>
-   <p class="small">Jog is only accepted while IDLE and disarmed. Limits: <span id="limTxt">-</span></p></div>
+   <p class="small">Jog is only accepted while IDLE and disarmed. After jogging or setting limits, press Open again before arming. Limits: <span id="limTxt">-</span></p>
+   <button class="estop" id="estop2">E-STOP</button></div>
  </div>
  <div class="panel"><h2>Config</h2><div class="cfg" id="svCfg"></div><button class="b pri" id="svSave">Save</button></div>
 </section>
@@ -220,7 +221,7 @@ function render(){
 $('bArm').onclick=function(){post(S&&S.armed?'/api/fsm/disarm':'/api/fsm/arm')};
 $('bOpen').onclick=function(){post('/api/fsm/open')};
 $('bReset').onclick=function(){post('/api/fsm/reset')};
-$('estop').onclick=function(){post('/api/fsm/estop')};
+$('estop').onclick=$('estop2').onclick=function(){post('/api/fsm/estop')};   /* never disabled */
 
 /* ---------- ToF ---------- */
 var maskEdit=[0n,0n,0n],maskLoaded=[null,null,null];
@@ -249,7 +250,7 @@ function drawTof(){
 /* ---------- config forms ---------- */
 var FORMS={
  svCfg:[['approachSpeed','Approach speed'],['graspSpeed','Grasp speed'],['openSpeed','Open speed'],['closeTorqueLimit','Close torque limit'],['openTorqueLimit','Open torque limit'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['runViaPosition','Run via position','b'],['closePositive','Close = positive','b']],
- fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspForceN','Grasp force N'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min active FSR per finger']],
+ fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspForceN','Grasp force N'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
  tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']]
 };
 function buildForms(){
@@ -296,19 +297,28 @@ $('maskSave').onclick=function(){
 
 /* ---------- Servo ---------- */
 function renderServo(){
-  var s=S.servo||{},rows=[['Online',s.online?'yes':'NO'],['Age',s.ageMs+' ms'],['Position',s.position],['Speed',s.speed],['Load',fx(s.load,1)],['Current',s.current],['Voltage',fx(s.voltage,1)+' V'],['Temp',s.temp+' C'],['Status',s.status+' ('+esc(s.statusText)+')'],['Mode',s.mode===null?'?':s.mode],['Full angle',s.fullAngle?'yes':'NO'],['Last error',esc(s.lastError||'-')]];
+  var s=S.servo||{},rows=[['Online',s.online?'yes':'NO'],['Age',s.ageMs+' ms'],['Position',s.position],['Speed',s.speed],['Load',fx(s.load,1)],['Current',s.current],['Voltage',fx(s.voltage,1)+' V'],['Temp',s.temp+' C'],['Status',s.status+' / reply '+s.replyStatus+' ('+esc(s.statusText)+')'],['Mode',s.mode===null?'?':s.mode],['Full angle',s.fullAngle?'yes':'NO'],['Last error',esc(s.lastError||'-')]];
   var h='';rows.forEach(function(r){h+='<tr><th>'+r[0]+'</th><td>'+r[1]+'</td></tr>'});
   $('svTbl').innerHTML=h;
 }
-var jogTimer=0,jogging=false;
+var jogTimer=0,jogging=false,jogBusy=false;
+/* Stop is sent at once, even while a jog POST is pending, and retried once on failure. */
+function sendStop(){post('/api/servo/stop').then(function(j){if(!j)post('/api/servo/stop')})}
 function jogStop(){
   if(!jogTimer&&!jogging)return;
   clearInterval(jogTimer);jogTimer=0;jogging=false;
-  post('/api/servo/stop');
+  sendStop();
 }
 function jogStart(dir){
   var sp=Math.max(1,Math.min(61,parseInt($('jogSpd').value,10)||20));
-  var send=function(){post('/api/servo/jog',{speed:dir*sp})};
+  var send=function(){
+    if(jogBusy||!jogging)return;           /* one jog POST in flight at a time */
+    jogBusy=true;
+    post('/api/servo/jog',{speed:dir*sp}).then(function(){
+      jogBusy=false;
+      if(!jogging)sendStop();              /* released while pending: the jog may have landed after the stop */
+    });
+  };
   jogging=true;send();clearInterval(jogTimer);jogTimer=setInterval(send,150);
 }
 [['jogC',1],['jogO',-1]].forEach(function(p){

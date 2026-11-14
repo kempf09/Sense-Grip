@@ -42,7 +42,7 @@ struct Out {
   }
 };
 
-static char statusBuf[6144];            // only the web task touches these
+static char statusBuf[8192];            // only the web task touches these (status incl. up to 21 blockers)
 static char smallBuf[1536];
 
 static void sendJson(int code, const char* body) {
@@ -120,7 +120,8 @@ static void handleStatus() {
   ServoSnapshot sv = servoGet();
   FsrSnapshot fs = fsrGet();
   TofSnapshot tf = tofGet();
-  char st[48]; svStatusText(sv.fb.status, st, sizeof(st));
+  const uint8_t bits = (uint8_t)(sv.fb.status | sv.replyStatus);   // same OR as the FSM input
+  char st[48]; svStatusText(bits, st, sizeof(st));
 
   Out o(statusBuf, sizeof(statusBuf));
   o.put("{\"ok\":true,\"state\":"); o.str(stateName(cs.state));
@@ -139,7 +140,8 @@ static void handleStatus() {
         (unsigned long)sv.ageMs, (long)sv.fb.position, (int)sv.fb.speed);
   o.flt(sv.fb.load);
   o.put(",\"current\":%d,\"voltage\":", (int)sv.fb.current); o.flt(sv.fb.voltage);
-  o.put(",\"temp\":%u,\"status\":%u,\"statusText\":", (unsigned)sv.fb.temp, (unsigned)sv.fb.status);
+  o.put(",\"temp\":%u,\"status\":%u,\"replyStatus\":%u,\"statusText\":",
+        (unsigned)sv.fb.temp, (unsigned)sv.fb.status, (unsigned)sv.replyStatus);
   o.str(st);
   if (sv.modeKnown) o.put(",\"mode\":%u", (unsigned)sv.mode); else o.put(",\"mode\":null");
   o.put(",\"fullAngle\":"); o.boolean(sv.fullAngle);

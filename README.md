@@ -36,20 +36,33 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
 1. Power the gripper. Join the Wi-Fi network `SENSE-GRIP` (password `12341234`).
 2. Open http://192.168.4.1
 3. Servo tab: press Scan if the servo shows offline. Scan finds the baud rate and saves it. The
-   servo ID stays at the saved value (default 1). There are no ID or baud fields.
+   servo ID stays at the saved value (default 1). There are no ID or baud fields. Scan blocks the
+   controller (and the software E-stop) for up to about 0.6 s: only scan with the gripper idle and clear.
 4. Jog the fingers to fully open, press **Set OPEN zero here**.
 5. Jog to fully closed, press **Set close limit here**.
 6. Press **Open**. The gripper goes to the OPEN zero and sits in IDLE. Open is refused while any servo blocker shows, including "Full angle: NO" (see "Why won't it arm?").
+   Press Open again after jogging or setting limits: arming needs the jaw to have reached OPEN since then.
 7. FSR tab: calibrate each channel, then Zero each one with nothing touching it.
 8. Press **Arm**. Bring an object within the detect distance and it closes.
 
 Notes:
+
+- At every power-up or ESP32 reset the firmware first switches servo torque off and sets its goal
+  speed to 0 (the servo keeps running its last command across an ESP32 reset). It retries for 1 s;
+  if the servo still does not answer, Last action shows `could not stop servo at boot: <error>` and
+  it keeps retrying until it does.
+- The servo must keep its multi-turn position across a power cycle (hardware checklist step 10).
+  If it does not, the saved OPEN zero and close limit no longer match the jaw: after every power-up,
+  jog to fully open and Set OPEN zero, jog to fully closed and Set close limit, then press Open.
 
 - Saved FSR calibration (NVS `fsr402`) and the old OPEN/TOUCH references carry over from the old
   firmware. Close limit = old TOUCH minus the old safety margin (default 100 counts), backed off toward open. All other old settings start from
   defaults.
 - Jogging is refused while armed (disarm first). A jog stops by itself if the button is released,
   the page loses focus, or 300 ms pass without a repeat. Once both limits are set, jog stops at them.
+  The Servo tab has its own E-STOP button, always enabled.
+- After a jog, Set OPEN zero, Set close limit, or a change of "Close = positive" or "Run via
+  position", press Open again before arming.
 - FSR Zero only works on a channel that is already calibrated.
 - After any FAULT: press Reset (accepted only once the servo is healthy), then press Open again
   before arming.
@@ -79,6 +92,14 @@ Always active while moving: force limit, stale servo feedback, servo status faul
 outside the travel limits. E-stop gives FAULT from any state. After a finished cycle the gripper is
 disarmed; arm again for the next grasp.
 
+Disarm during START, PRE_TOUCH or GRASP releases: it acts like Open (state OPEN, reason
+"Disarmed during <state> — opening"). In IDLE, MONITOR, OPEN or FAULT it only clears the armed
+flag; MONITOR keeps holding until you press Open.
+
+Servo status faults come from the status register and from the status byte of every servo reply
+(OR-ed together). `/api/status` shows both (`servo.status`, `servo.replyStatus`) and names the
+active bits in `servo.statusText`.
+
 ## Why won't it arm?
 
 The dashboard lists every blocker. Arm is refused while any is present.
@@ -86,11 +107,11 @@ The dashboard lists every blocker. Arm is refused while any is present.
 | Text | What to do |
 |---|---|
 | `servo offline or feedback stale` | Check servo power and bus wiring; Servo tab, press Scan (gripper idle and clear). |
-| `servo status: ...` | The servo reports voltage, temperature or overload. Fix the cause, power-cycle if needed. |
+| `servo status: ...` | The servo reports voltage, temperature or overload (status register or reply status byte). Fix the cause, power-cycle if needed. Reset stays refused, naming the bit, while it persists. |
 | `servo multi-turn (full-angle) feedback off` | The firmware cannot change this. Set the CF35-12 to multi-turn / full-angle mode with the Waveshare servo configuration tool (the bit reads as register 18 bit 4), then power-cycle the servo. The old firmware needed the same setting, so a servo that worked with it is already set. The Servo tab shows "Full angle: NO" when it is off. Open is refused for this reason too. |
 | `OPEN zero / close limit not set` | Do first-boot steps 4 and 5. |
 | `close limit is not on the closing side of OPEN zero` | Set the limits again with the fingers jogged the right way round. |
-| `not at OPEN — press Open once after power-up` | Press Open. Also needed after every FAULT. |
+| `not at OPEN — press Open (after power-up, jog, new limits)` | Press Open. Needed after power-up, after every FAULT, after jogging, after setting OPEN zero or close limit, and after changing "Close = positive" or "Run via position". |
 | `FSR n not calibrated` | Calibrate channel n on the FSR tab. |
 | `FSR n loaded at rest` | Something is pressing on pad n. Remove it, or Zero the channel. |
 | `no ToF sensor online` | Check I2C wiring and sensor power. |
@@ -103,7 +124,7 @@ All under the dashboard host. POST unless noted.
 | Route | Purpose |
 |---|---|
 | GET `/` | Dashboard page |
-| GET `/api/status` | State, reason, blockers, servo, FSR values |
+| GET `/api/status` | State, reason, blockers, servo (incl. `status`, `replyStatus`, `statusText`), FSR values |
 | GET `/api/tof` | ToF readings |
 | GET / POST `/api/config` | Read / save settings |
 | GET / POST `/api/fsr/cal` | Read / save FSR calibration |
