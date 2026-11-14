@@ -3,7 +3,7 @@
 #include <math.h>
 
 namespace {
-constexpr uint8_t CFG_VERSION = 3;   // 2: speeds in servo steps/s (v1 used 1..61); 3: + fsrEnabled
+constexpr uint8_t CFG_VERSION = 3;   // 3: + fsrEnabled. (v2 builds saved speeds up to 3400; clampConfig brings them back to <= 61)
 
 // Release 3.0.3 FsmConfig layout, copied verbatim for migration (read-only).
 struct FsmConfig {
@@ -36,7 +36,6 @@ bool loadNew(GripConfig& out, bool& upgraded) {
   if (want && len == want) {
     GripConfig tmp = defaultConfig();          // fields missing from older blobs keep defaults
     if (p.getBytes("cfg", &tmp, want) == want) {
-      if (ver == 1) upgradeFromV1(tmp);
       upgraded = ver != CFG_VERSION;
       out = tmp; ok = true;
     }

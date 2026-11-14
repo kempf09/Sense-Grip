@@ -47,12 +47,16 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
 
 Notes:
 
-- Speeds are in servo steps per second (4096 steps = one turn; 2000 steps/s is about 29 RPM).
-  Defaults: approach 2000, grasp 300, open 2000; maximum 3400. Settings saved by earlier builds
-  (which capped speed at 61, about 1 RPM) get these new speeds on first boot; limits are kept.
-- At every power-up or ESP32 reset the firmware first sets the servo torque limit to 0 and switches
-  torque off (the servo keeps running its last command across an ESP32 reset). A stop never writes
-  a goal speed or position: on this servo that re-enables torque. It retries for 1 s;
+- Servo units follow the Waveshare CF library (CFServo_Arduino-250110): speed x0.732 RPM (max 61,
+  about 45 RPM), acceleration x8.7 deg/s^2 (50 used), max current x6.5 mA. Defaults: approach 61,
+  grasp 10, open 61.
+- Moves are sent exactly as the library's WritePosEx / WriteSpe do: one write of registers 41..47.
+  Writing that block starts the motion; torque enable is not written for a move.
+- A stop is torque off only. At every power-up or ESP32 reset the firmware first switches torque
+  off (the servo keeps running its last command across an ESP32 reset).
+- **Calibrate servo middle here** (Servo tab) runs the library's CalibrationOfs: torque off, EEPROM
+  unlock, calibrate (present position becomes the servo middle), EEPROM lock. All positions shift,
+  so the limits are cleared: set OPEN zero and close limit again afterwards. It retries for 1 s;
   if the servo still does not answer, Last action shows `could not stop servo at boot: <error>` and
   it keeps retrying until it does.
 - The servo must keep its multi-turn position across a power cycle (hardware checklist step 10).
@@ -144,6 +148,7 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/setClose` | Save current position as close limit |
 | `/api/servo/scan` | Find servo baud rate |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
+| `/api/servo/calibrateMiddle` | Servo middle calibration at the present position (clears limits) |
 | `/api/fsm/arm`, `/api/fsm/disarm` | Arm / disarm |
 | `/api/fsm/open` | Go to OPEN zero |
 | `/api/fsm/estop` | Emergency stop, FAULT |

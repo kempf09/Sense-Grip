@@ -9,7 +9,7 @@ HardwareSerial Bus(1);
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
 constexpr uint32_t REPLY_TIMEOUT_US = 25000;
-constexpr uint8_t  ACCEL = 20;
+constexpr uint8_t  ACCEL = 50;          // units of 8.7 deg/s^2, as in the Waveshare CF examples
 constexpr size_t   RX_CAP = 64;
 
 uint8_t  servoId = 1;
@@ -118,14 +118,11 @@ void put16(uint16_t v, uint8_t* p) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8)
 
 bool torqueOff() { const uint8_t off = 0; return writeRegs(40, &off, 1); }
 
-// Stop the same way the Release 3.0.3 firmware did on this servo: torque limit 0
-// (regs 44..45), then torque off (reg 40, retried once). Never writes the goal speed
-// or goal position: on this servo a goal write re-enables torque, and goal speed 0 means
-// full speed in position mode (observed: the gripper drove to OPEN while in FAULT).
-// Every later verb rewrites the torque limit before enabling torque.
+// Stop = torque off only (Waveshare CF library EnableTorque(ID, 0)), retried once.
+// Nothing else is written: on this servo writing a goal register (41..47) re-enables
+// torque and starts motion (observed: the gripper drove to OPEN while in FAULT after
+// a goal-speed write).
 bool stopWrites() {
-  const uint8_t zero[2] = {0, 0};
-  writeRegs(44, zero, 2);            // best effort
   return torqueOff() || torqueOff();
 }
 
@@ -154,17 +151,20 @@ bool ensureMode(uint8_t want) {
   return true;
 }
 
-bool torqueOn() { const uint8_t one = 1; return writeRegs(40, &one, 1); }
-
 uint16_t clampU16(int32_t v, int32_t lo, int32_t hi) { return (uint16_t)(v < lo ? lo : v > hi ? hi : v); }
 
-// Block 41: accel u8, goal pos SM15, torque limit u16, goal speed u16.
-bool writePositionBlock(int32_t pos, uint16_t speed, uint16_t torqueLimit) {
+// Block 41..47 exactly as the Waveshare CF library writes it (WritePosEx / WriteSpe):
+// accel u8, goal position SM15, goal torque (max current, 6.5 mA units) u16, goal speed
+// SM15 (0.732 RPM units). Writing this block is what starts the motion; the library
+// never writes torque enable (reg 40) for a move, and writing it after the goal can
+// make the servo take its present position as the goal (Open used to time out without
+// moving).
+bool writeGoalBlock(int32_t pos, int32_t speed, uint16_t torqueLimit) {
   uint8_t d[7];
   d[0] = ACCEL;
   put16(svEncodeSM15(pos), d + 1);
-  put16(clampU16(torqueLimit, 1, 430), d + 3);
-  put16(clampU16(speed, 1, 32767), d + 5);
+  put16(clampU16(torqueLimit, 1, 1000), d + 3);
+  put16(svEncodeSM15(speed), d + 5);
   return writeRegs(41, d, 7);
 }
 }  // namespace
@@ -210,8 +210,8 @@ bool servoReadModeAndPhase() {
 }
 
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit) {
-  // Goal first, torque last, so torque never comes on with a stale goal.
-  if (ensureMode(0) && writePositionBlock(position, speed, torqueLimit) && torqueOn()) {
+  if (speed < 1) speed = 1;
+  if (ensureMode(0) && writeGoalBlock(position, speed, torqueLimit)) {
     clearError();
     return true;
   }
@@ -239,11 +239,8 @@ bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit) {
   }
   if (!ensureMode(1)) return false;
   const int32_t signedSpeed = closePositiveDir ? speedClosingPositive : -(int32_t)speedClosingPositive;
-  uint8_t d[4];  // regs 44..45 torque limit, 46..47 goal speed
-  put16(clampU16(torqueLimit, 1, 430), d);
-  put16(svEncodeSM15(signedSpeed), d + 2);
-  // Speed and torque limit first, torque last.
-  if (writeRegs(44, d, 4) && torqueOn()) { clearError(); return true; }
+  // Wheel mode: same block as the library's WriteSpe (position field 0).
+  if (writeGoalBlock(0, signedSpeed, torqueLimit)) { clearError(); return true; }
   cleanupStop();
   return false;
 }
@@ -255,6 +252,20 @@ bool servoStop() {
 }
 
 bool servoBootStop() { return servoStop(); }
+
+// Waveshare CalibrationOfs(): torque off, unlock EEPROM (reg 55 = 0), calibrate
+// instruction 0x0B (current position becomes the servo's middle). The EEPROM is locked
+// again afterwards (the library leaves it unlocked).
+bool servoCalibrateMiddle() {
+  if (!stopWrites()) return false;
+  const uint8_t unlock = 0, lock = 1;
+  if (!writeRegs(55, &unlock, 1)) return false;
+  uint8_t st = 0, n = 0;
+  const bool ok = transact(SV_CAL, nullptr, 0, st, nullptr, n);
+  writeRegs(55, &lock, 1);            // best effort
+  if (ok) clearError();
+  return ok;
+}
 
 bool servoScanBaud(uint32_t& foundBaud) {
   static const uint32_t bauds[] = {1000000, 500000, 250000, 128000, 115200, 76800, 57600, 38400};

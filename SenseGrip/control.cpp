@@ -114,7 +114,8 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
                    : r.kind == ControlRequest::SET_OPEN ? "set open"
                    : r.kind == ControlRequest::SET_CLOSE ? "set close"
                    : r.kind == ControlRequest::SCAN ? "scan"
-                   : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits" : "config";
+                   : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits"
+                   : r.kind == ControlRequest::CALIBRATE_MIDDLE ? "calibrate middle" : "config";
   State st = c.fsm.state();
   if (st != State::IDLE && st != State::FAULT) {
     say(c, false, "%s only allowed in IDLE or FAULT (now %s)", what, stateName(st));
@@ -182,6 +183,21 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       applyConfig(c);
       c.fsm.invalidateOpened();
       say(c, true, "limits cleared: jog freely, then set OPEN zero and close limit again");
+      return;
+    }
+    case ControlRequest::CALIBRATE_MIDDLE: {
+      jogStop(c);
+      if (c.fsm.armed()) { say(c, false, "disarm before calibrating"); return; }
+      if (!sv.online) { say(c, false, "calibrate middle refused: servo offline"); return; }
+      if (!servoCalibrateMiddle()) { say(c, false, "calibrate middle failed: %s", servoGet().lastError); return; }
+      // Every position the servo reports has shifted: saved limits no longer match the jaw.
+      GripConfig n = c.cfg;
+      n.limitsValid = false;
+      configSave(n);
+      c.cfg = n;
+      applyConfig(c);
+      c.fsm.invalidateOpened();
+      say(c, true, "servo middle calibrated here (torque off); limits cleared - set OPEN zero and close limit again");
       return;
     }
     case ControlRequest::SCAN: {

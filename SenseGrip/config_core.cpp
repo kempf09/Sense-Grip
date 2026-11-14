@@ -4,7 +4,7 @@
 GripConfig defaultConfig() {
   GripConfig c{};
   c.openZero = 0; c.closeLimit = 0; c.limitsValid = false; c.closePositive = true;
-  c.approachSpeed = 2000; c.graspSpeed = 300; c.openSpeed = 2000;
+  c.approachSpeed = 61; c.graspSpeed = 10; c.openSpeed = 61;
   c.closeTorqueLimit = 200; c.openTorqueLimit = 260;
   c.openToleranceCounts = 8; c.limitSlackCounts = 200;
   c.contactForceN = 0.25f; c.contactSamples = 3;
@@ -69,9 +69,3 @@ const char* limitsProblem(const GripConfig& c) {
   return nullptr;
 }
 
-void upgradeFromV1(GripConfig& c) {
-  const GripConfig d = defaultConfig();
-  c.approachSpeed = d.approachSpeed;
-  c.graspSpeed = d.graspSpeed;
-  c.openSpeed = d.openSpeed;
-}

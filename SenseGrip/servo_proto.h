@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum : uint8_t { SV_PING = 1, SV_READ = 2, SV_WRITE = 3 };
+enum : uint8_t { SV_PING = 1, SV_READ = 2, SV_WRITE = 3, SV_CAL = 0x0B };   // 0x0B: Waveshare INST_CAL
 
 // FF FF id len instr params... ~sum. Returns bytes written (n+6). out must hold n+6.
 size_t svBuildPacket(uint8_t id, uint8_t instr, const uint8_t* params, uint8_t n, uint8_t* out);

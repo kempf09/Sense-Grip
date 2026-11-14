@@ -2,7 +2,7 @@
 
 Run once on real hardware. Gripper unloaded, hand on the E-stop.
 
-1. **Servo gate.** Servo tab: Jog at speed 400 (steps/s, about 6 RPM). Fingers move and `mode` reads 1. Release: it stops.
+1. **Servo gate.** Servo tab: Jog at speed 10 (about 7 RPM). Fingers move and `mode` reads 1. Release: it stops.
    Power-cycle: `mode` reads the value from before the jog (the mode write is not persisted).
    After a jog, press Open: no jump on the 1 to 0 switch. If it jumps on the 1 to 0 switch, stop and use step 9 (`runViaPosition`). Any other failure: tick `runViaPosition`.
 2. **Limits.** Set OPEN zero and close limit; press Open. IDLE shows only "not armed".
@@ -25,8 +25,7 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
     must stop within about a second of the reset (torque off) and the dashboard comes back in IDLE.
 12. **Disarm while closing.** Arm and trigger a close; press Disarm during PRE_TOUCH: state goes to
     OPEN with "Disarmed during PRE_TOUCH — opening", then IDLE.
-13. **Speeds.** With an object in front, Arm: PRE_TOUCH must reach the object well inside the 8 s
-    pre-touch timeout (about 5 s for full travel at 2000 steps/s). If the gripper crawls, check the
-    Servo tab speed reading while it moves; raise or lower Approach/Open speed (max 3400).
+13. **Open moves.** From IDLE away from OPEN, press Open: the fingers move to OPEN zero and the state
+    returns to IDLE (no timeout). Full travel at speed 61 takes about 6 s.
 14. **FAULT stop.** Cause a FAULT during PRE_TOUCH (E-STOP). The fingers must stop and stay put;
     pressing Open while in FAULT must not move them (it says "Reset first").

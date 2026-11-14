@@ -2,13 +2,13 @@
 #pragma once
 #include <stdint.h>
 
-// Servo speed unit is steps/s (4096 steps per revolution). 3400 steps/s ~ 50 RPM.
-constexpr uint16_t SPEED_MAX = 3400;
+// Servo speed unit: 0.732 RPM (Waveshare CF library: "V=60*0.732=43.92rpm"); 61 ~ 44.7 RPM max.
+constexpr uint16_t SPEED_MAX = 61;
 
 struct GripConfig {
   int32_t openZero; int32_t closeLimit; bool limitsValid; bool closePositive;
-  uint16_t approachSpeed, graspSpeed, openSpeed;        // 1..SPEED_MAX, servo steps/s (4096 steps = 1 rev)
-  uint16_t closeTorqueLimit, openTorqueLimit;           // 1..430
+  uint16_t approachSpeed, graspSpeed, openSpeed;        // 1..SPEED_MAX, units of 0.732 RPM
+  uint16_t closeTorqueLimit, openTorqueLimit;           // 1..430, reg 44 max current, units of 6.5 mA
   uint16_t openToleranceCounts;                         // 1..200
   uint16_t limitSlackCounts;                            // 0..2000
   float contactForceN; uint8_t contactSamples;          // 0.05..5 / 1..20
@@ -23,9 +23,6 @@ struct GripConfig {
 };
 
 GripConfig defaultConfig();
-// Config blobs saved with version 1 used speeds 1..61 (a wrong unit assumption,
-// ~1 RPM). Replaces those speeds with the current defaults; everything else is kept.
-void upgradeFromV1(GripConfig& c);
 // Size of the config blob saved by versions 1 and 2 (everything before fsrEnabled).
 constexpr unsigned GRIP_CONFIG_V2_SIZE = __builtin_offsetof(GripConfig, fsrEnabled);
 // Clamps every field into range; returns true if anything changed.

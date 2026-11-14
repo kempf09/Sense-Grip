@@ -389,6 +389,7 @@ void webBegin() {
   server.on("/api/servo/setClose", HTTP_POST, [] { simple(ControlRequest::SET_CLOSE); });
   server.on("/api/servo/scan", HTTP_POST, [] { simple(ControlRequest::SCAN); });
   server.on("/api/servo/clearLimits", HTTP_POST, [] { simple(ControlRequest::CLEAR_LIMITS); });
+  server.on("/api/servo/calibrateMiddle", HTTP_POST, [] { simple(ControlRequest::CALIBRATE_MIDDLE); });
   server.on("/api/fsm/arm", HTTP_POST, [] { fsmCmd(Cmd::ARM); });
   server.on("/api/fsm/disarm", HTTP_POST, [] { fsmCmd(Cmd::DISARM); });
   server.on("/api/fsm/open", HTTP_POST, [] { fsmCmd(Cmd::OPEN); });
