@@ -6,7 +6,9 @@
 
 struct ServoSnapshot {
   bool online; uint32_t ageMs; uint8_t mode; bool modeKnown; bool fullAngle;
-  ServoFeedback fb; char lastError[48];
+  ServoFeedback fb;
+  uint8_t replyStatus;   // status byte of the latest reply (same bits as fb.status); 0 = none
+  char lastError[64];    // last failure; cleared when a verb succeeds
 };
 
 void servoBegin(uint8_t id, uint32_t baud);
@@ -15,7 +17,8 @@ bool servoReadModeAndPhase();                       // regs 33, 18
 bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit);
 bool servoHoldHere(uint16_t torqueLimit, uint16_t speed);
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit);
-bool servoStop();                                   // torque off
+bool servoStop();                                   // torque off (+ goal speed 0, best effort); true = torque off acked
+bool servoBootStop();                               // as servoStop, but true only if goal speed 0 was acked too
 bool servoScanBaud(uint32_t& foundBaud);            // tries {1000000,500000,250000,128000,115200,76800,57600,38400}
 ServoSnapshot servoGet();
 void servoSetRunViaPosition(bool v, int32_t closeLimit, int32_t openZero, bool closePositive);

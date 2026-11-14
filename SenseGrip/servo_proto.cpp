@@ -77,3 +77,9 @@ ServoFeedback svDecodeFeedback(const uint8_t b[18]) {
   f.current = (int16_t)svDecodeSM15(rd16(b + 13));
   return f;
 }
+
+void svPhaseUpdate(SvPhaseLatch& l, bool readOk, uint8_t phase) {
+  if (readOk) { l.fullAngle = (phase & 0x10) != 0; l.fails = 0; return; }
+  if (l.fails < SV_PHASE_MAX_FAILS) l.fails++;
+  if (l.fails >= SV_PHASE_MAX_FAILS) l.fullAngle = false;
+}

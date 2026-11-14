@@ -17,6 +17,8 @@ static GripConfig gCfgPub;
 
 static constexpr uint32_t JOG_DEADMAN_MS = 300;
 static constexpr uint32_t SERVO_FRESH_MS = 100;
+static constexpr uint32_t BOOT_STOP_RETRY_MS = 20;
+static constexpr uint32_t BOOT_STOP_WINDOW_MS = 1000;
 
 void controlBegin() {
   memset(&gStatus, 0, sizeof(gStatus));
@@ -49,6 +51,7 @@ struct Ctl {
   uint32_t jogLastMs = 0;
   char msg[96] = "";
   bool msgOk = true;
+  bool bootStopPending = false;   // servo not yet confirmed stopped after reset
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -135,6 +138,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
         return;
       }
       uint16_t tq = sp > 0 ? c.cfg.closeTorqueLimit : c.cfg.openTorqueLimit;
+      c.fsm.invalidateOpened();            // the jaw may leave OPEN (even if the command fails)
       if (!servoRunAt(sp, tq)) {
         c.jogActive = true;   // so jogStop() sends and retries the stop
         jogStop(c);
@@ -160,6 +164,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       if (!configSave(n)) { say(c, false, "%s failed: could not save config", what); return; }
       c.cfg = n;
       applyConfig(c);
+      c.fsm.invalidateOpened();            // OPEN must be reached again against the new limits
       if (prob) say(c, true, "%s saved at %ld; limits not valid yet (%s)", what, (long)sv.fb.position,
                     isOpen ? "set CLOSE limit on the closing side" : "set OPEN zero on the opening side");
       else say(c, true, "%s saved at %ld", what, (long)sv.fb.position);
@@ -189,8 +194,11 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
         if (prob) { say(c, false, "config refused: %s", prob); return; }
       }
       if (!configSave(n)) { say(c, false, "config failed: could not save"); return; }
+      const bool motionChanged = n.closePositive != c.cfg.closePositive ||
+                                 n.runViaPosition != c.cfg.runViaPosition;
       c.cfg = n;
       applyConfig(c);
+      if (motionChanged) c.fsm.invalidateOpened();   // press Open again with the new direction/mode
       say(c, true, "config saved");
       return;
     }
@@ -205,7 +213,9 @@ FsmInputs buildInputs(uint32_t now, Cmd cmd) {
   FsrSnapshot fs = fsrGet();
   TofSnapshot tf = tofGet();
   in.nowMs = now; in.cmd = cmd;
-  in.servoOnline = sv.online; in.servoAgeMs = sv.ageMs; in.servoStatus = sv.fb.status;
+  // Fault bits come from the status register and from the status byte of each reply.
+  in.servoOnline = sv.online; in.servoAgeMs = sv.ageMs;
+  in.servoStatus = (uint8_t)(sv.fb.status | sv.replyStatus);
   in.servoFullAngle = sv.fullAngle; in.servoModeKnown = sv.modeKnown;
   in.position = sv.fb.position;
   bool any = false;
@@ -237,7 +247,7 @@ void publish(Ctl& c) {
   s.armed = c.fsm.armed(); s.openedSinceBoot = c.fsm.openedSinceBoot();
   snprintf(s.reason, sizeof(s.reason), "%s", c.fsm.reason());
   snprintf(s.faultReason, sizeof(s.faultReason), "%s", c.fsm.faultReason());
-  s.nBlockers = c.fsm.blockers(s.blockers, 10);
+  s.nBlockers = c.fsm.blockers(s.blockers, Fsm::MAX_REPORTED);
   snprintf(s.lastActionMsg, sizeof(s.lastActionMsg), "%s", c.msg);
   s.lastActionOk = c.msgOk;
   portENTER_CRITICAL(&gMux);
@@ -245,12 +255,42 @@ void publish(Ctl& c) {
   portEXIT_CRITICAL(&gMux);
 }
 
+// After an ESP32 reset the servo keeps its last mode, torque and goal speed (it may
+// still be closing). Stop it before the control loop starts: retry every 20 ms for
+// up to 1 s; if it still fails, the loop keeps retrying every iteration.
+void bootStop(Ctl& c) {
+  const uint32_t t0 = millis();
+  for (;;) {
+    if (servoBootStop()) { say(c, true, "servo stopped at boot (torque off, goal speed 0)"); return; }
+    if ((uint32_t)(millis() - t0) >= BOOT_STOP_WINDOW_MS) break;
+    vTaskDelay(pdMS_TO_TICKS(BOOT_STOP_RETRY_MS));
+  }
+  c.bootStopPending = true;
+  say(c, false, "could not stop servo at boot: %s", servoGet().lastError);
+}
+
+void retryBootStop(Ctl& c) {
+  if (!c.bootStopPending) return;
+  // Once the FSM or a jog drives the servo, its commands replace the stale goal.
+  State st = c.fsm.state();
+  if (c.jogActive || (st != State::IDLE && st != State::FAULT)) { c.bootStopPending = false; return; }
+  if (servoBootStop()) {
+    c.bootStopPending = false;
+    say(c, true, "servo stopped (after boot retries)");
+  } else {
+    say(c, false, "could not stop servo at boot: %s", servoGet().lastError);
+  }
+}
+
 }  // namespace
 
 void controlTask(void*) {
   Ctl* c = new Ctl(configLoad());
   applyConfig(*c);                     // no motion at boot
+  bootStop(*c);
+  // Mode/phase are read on the first iteration so Open is not refused for the first second.
   uint32_t lastServo = 0, lastFsr = 0, lastMode = 0;
+  bool modeRead = false;
   for (;;) {
     uint32_t now = millis();
     Cmd cmd = Cmd::NONE;
@@ -273,6 +313,7 @@ void controlTask(void*) {
     State fst = c->fsm.state();
     if (c->jogActive && fst != State::IDLE && fst != State::FAULT) c->jogActive = false;
     retryStop(*c);
+    retryBootStop(*c);
     if (c->jogActive && c->cfg.limitsValid) {
       ServoSnapshot js = servoGet();
       if (!js.online || js.ageMs > SERVO_FRESH_MS) {
@@ -290,7 +331,7 @@ void controlTask(void*) {
 
     if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; servoPoll(); }
     if ((uint32_t)(now - lastFsr) >= 20) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples); }
-    if ((uint32_t)(now - lastMode) >= 1000) { lastMode = now; servoReadModeAndPhase(); }
+    if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     MotorAction a = c->fsm.step(buildInputs(now, cmd));
     if (a.kind != MotorAction::NONE && !applyAction(a)) {

@@ -12,7 +12,7 @@ struct ControlRequest {
 struct ControlStatus {
   State state; State faultFrom; bool armed; bool openedSinceBoot;
   char reason[96]; char faultReason[96];
-  Blocker blockers[10]; uint8_t nBlockers;
+  Blocker blockers[Fsm::MAX_REPORTED]; uint8_t nBlockers;   // every blocker the FSM can report
   char lastActionMsg[96]; bool lastActionOk;
 };
 

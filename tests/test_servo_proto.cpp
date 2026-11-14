@@ -70,3 +70,24 @@ TEST(sv_decode_feedback) {
   CHECK_EQ(f.temp, 40);
   CHECK(f.moving);
 }
+
+TEST(sv_phase_latch_tolerates_two_failed_reads) {
+  SvPhaseLatch l{false, 0};
+  svPhaseUpdate(l, true, 0x10);
+  CHECK(l.fullAngle);
+  svPhaseUpdate(l, false, 0);
+  svPhaseUpdate(l, false, 0);
+  CHECK(l.fullAngle);                       // two failures: keep last good value
+  svPhaseUpdate(l, true, 0x10);             // a good read resets the count
+  svPhaseUpdate(l, false, 0);
+  svPhaseUpdate(l, false, 0);
+  CHECK(l.fullAngle);
+  svPhaseUpdate(l, false, 0);               // third consecutive failure clears it
+  CHECK(!l.fullAngle);
+  svPhaseUpdate(l, false, 0);
+  CHECK(!l.fullAngle);
+  svPhaseUpdate(l, true, 0x10);
+  CHECK(l.fullAngle);
+  svPhaseUpdate(l, true, 0x00);             // good read with bit clear: off at once
+  CHECK(!l.fullAngle);
+}

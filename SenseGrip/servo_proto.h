@@ -29,3 +29,10 @@ struct ServoFeedback {
 };
 // Feedback block regs 56..73 (18 bytes), offsets as in Release 3.0.3 pollMotor().
 ServoFeedback svDecodeFeedback(const uint8_t b[18]);
+
+// Full-angle flag (register 18 bit 4) with failure tolerance: a good read sets the
+// flag from the bit; a failed read keeps the last good value, and only
+// SV_PHASE_MAX_FAILS consecutive failed reads clear it.
+constexpr uint8_t SV_PHASE_MAX_FAILS = 3;
+struct SvPhaseLatch { bool fullAngle; uint8_t fails; };
+void svPhaseUpdate(SvPhaseLatch& l, bool readOk, uint8_t phase);

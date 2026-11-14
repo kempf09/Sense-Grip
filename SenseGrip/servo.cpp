@@ -19,6 +19,7 @@ uint32_t servoBaud = 1000000;
 ServoSnapshot snap = {};
 uint32_t lastGoodMs = 0;
 bool     everGood = false;
+SvPhaseLatch phaseLatch = {false, 0};   // UART-task-only
 
 // UART-task-only.
 bool runViaPosition = false;
@@ -29,6 +30,17 @@ void setError(const char* text) {
   portENTER_CRITICAL(&mux);
   strncpy(snap.lastError, text, sizeof(snap.lastError) - 1);
   snap.lastError[sizeof(snap.lastError) - 1] = '\0';
+  portEXIT_CRITICAL(&mux);
+}
+
+void clearError() {
+  portENTER_CRITICAL(&mux); snap.lastError[0] = '\0'; portEXIT_CRITICAL(&mux);
+}
+
+void getError(char* out, size_t cap) {
+  portENTER_CRITICAL(&mux);
+  strncpy(out, snap.lastError, cap - 1);
+  out[cap - 1] = '\0';
   portEXIT_CRITICAL(&mux);
 }
 
@@ -65,6 +77,8 @@ bool transact(uint8_t instr, const uint8_t* params, uint8_t n, uint8_t& status,
       SvParse r = svParseReply(rx, have, servoId, st, d, dn, used);
       if (r == SvParse::OK) {
         status = st; outN = dn;
+        // The status byte carries the servo's error bits; it is data, not a bus failure.
+        portENTER_CRITICAL(&mux); snap.replyStatus = st; portEXIT_CRITICAL(&mux);
         if (out && dn) memcpy(out, d, dn);
         return true;
       }
@@ -81,33 +95,52 @@ bool transact(uint8_t instr, const uint8_t* params, uint8_t n, uint8_t& status,
   return false;
 }
 
-bool readRegs(uint8_t addr, uint8_t n, uint8_t* out, uint8_t* statusOut = nullptr) {
+// A reply with a non-zero status byte is still a valid reply: the data is returned and
+// the status is recorded in snap.replyStatus (the FSM ORs it into its fault check).
+bool readRegs(uint8_t addr, uint8_t n, uint8_t* out) {
   const uint8_t q[2] = {addr, n};
   uint8_t st = 0, got = 0;
   if (!transact(SV_READ, q, 2, st, out, got)) return false;
   if (got != n) { setError("reply length mismatch"); return false; }
-  if (statusOut) *statusOut = st;
-  else if (st != 0) {
-    char e[48]; snprintf(e, sizeof(e), "servo status 0x%02X", st); setError(e); return false;
-  }
   return true;
 }
 
+// Delivered (true) whenever the servo acknowledged, whatever its status byte says.
 bool writeRegs(uint8_t addr, const uint8_t* data, uint8_t n) {
   uint8_t q[16];
   if (n > sizeof(q) - 1) { setError("write too long"); return false; }
   q[0] = addr; memcpy(q + 1, data, n);
   uint8_t st = 0, got = 0;
-  if (!transact(SV_WRITE, q, (uint8_t)(n + 1), st, nullptr, got)) return false;
-  if (st != 0) {
-    char e[48]; snprintf(e, sizeof(e), "servo status 0x%02X", st); setError(e); return false;
-  }
-  return true;
+  return transact(SV_WRITE, q, (uint8_t)(n + 1), st, nullptr, got);
 }
 
 void put16(uint16_t v, uint8_t* p) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 
 bool torqueOff() { const uint8_t off = 0; return writeRegs(40, &off, 1); }
+
+// Torque off, then goal speed 0 (regs 46..47, so a later torque-on in speed mode does
+// not spin), then torque off again in case the speed write re-enabled torque. Torque
+// goes off first so a zero speed is never applied in position mode with torque on.
+// Each torque-off write is retried once. Leaves lastError alone on success.
+bool stopWrites(bool& speedZeroed) {
+  bool off = torqueOff() || torqueOff();
+  const uint8_t zero[2] = {0, 0};
+  speedZeroed = writeRegs(46, zero, 2);
+  if (speedZeroed) off = torqueOff() || torqueOff();
+  return off;
+}
+
+// Cleanup stop after a failed verb: keeps the original error, appends a note if the
+// stop also failed.
+void cleanupStop() {
+  char orig[sizeof(snap.lastError)];
+  getError(orig, sizeof(orig));
+  bool sp;
+  if (stopWrites(sp)) { setError(orig); return; }
+  char e[sizeof(snap.lastError)];
+  snprintf(e, sizeof(e), "%.40s; stop failed too", orig);
+  setError(e);
+}
 
 bool ensureMode(uint8_t want) {
   bool known; uint8_t cur;
@@ -144,6 +177,7 @@ void servoBegin(uint8_t id, uint32_t baud) {
   memset(&snap, 0, sizeof(snap));
   everGood = false;
   portEXIT_CRITICAL(&mux);
+  phaseLatch = {false, 0};
   busBegin(baud);
 }
 
@@ -159,23 +193,31 @@ bool servoPoll() {
   portEXIT_CRITICAL(&mux);
   return true;
 }
+// servoPoll does not clear lastError: a verb failure stays visible until the next verb succeeds.
 
 bool servoReadModeAndPhase() {
   uint8_t mode = 255, phase = 0;
   if (!readRegs(33, 1, &mode) || mode > 3) {
-    portENTER_CRITICAL(&mux); snap.modeKnown = false; snap.mode = 255; portEXIT_CRITICAL(&mux);
+    svPhaseUpdate(phaseLatch, false, 0);       // counts as a failed phase read
+    portENTER_CRITICAL(&mux);
+    snap.modeKnown = false; snap.mode = 255; snap.fullAngle = phaseLatch.fullAngle;
+    portEXIT_CRITICAL(&mux);
     return false;
   }
   portENTER_CRITICAL(&mux); snap.mode = mode; snap.modeKnown = true; portEXIT_CRITICAL(&mux);
   const bool phaseOk = readRegs(18, 1, &phase);
-  portENTER_CRITICAL(&mux); snap.fullAngle = phaseOk && (phase & 0x10) != 0; portEXIT_CRITICAL(&mux);
+  svPhaseUpdate(phaseLatch, phaseOk, phase);   // one dropped reply keeps the last good value
+  portENTER_CRITICAL(&mux); snap.fullAngle = phaseLatch.fullAngle; portEXIT_CRITICAL(&mux);
   return phaseOk;
 }
 
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit) {
   // Goal first, torque last, so torque never comes on with a stale goal.
-  if (ensureMode(0) && writePositionBlock(position, speed, torqueLimit) && torqueOn()) return true;
-  servoStop();  // best effort cleanup; lastError keeps the original failure unless stop also fails
+  if (ensureMode(0) && writePositionBlock(position, speed, torqueLimit) && torqueOn()) {
+    clearError();
+    return true;
+  }
+  cleanupStop();  // best effort; lastError keeps the original failure
   return false;
 }
 
@@ -203,14 +245,23 @@ bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit) {
   put16(clampU16(torqueLimit, 1, 430), d);
   put16(svEncodeSM15(signedSpeed), d + 2);
   // Speed and torque limit first, torque last.
-  if (writeRegs(44, d, 4) && torqueOn()) return true;
-  servoStop();
+  if (writeRegs(44, d, 4) && torqueOn()) { clearError(); return true; }
+  cleanupStop();
   return false;
 }
 
 bool servoStop() {
-  const uint8_t off = 0;
-  return writeRegs(40, &off, 1);
+  bool speedZeroed;
+  if (!stopWrites(speedZeroed)) return false;
+  clearError();
+  return true;
+}
+
+bool servoBootStop() {
+  bool speedZeroed;
+  if (!stopWrites(speedZeroed) || !speedZeroed) return false;
+  clearError();
+  return true;
 }
 
 bool servoScanBaud(uint32_t& foundBaud) {
@@ -219,7 +270,7 @@ bool servoScanBaud(uint32_t& foundBaud) {
   for (uint32_t baud : bauds) {
     busBegin(baud);
     uint8_t st = 0, n = 0;
-    if (transact(SV_PING, nullptr, 0, st, nullptr, n)) { foundBaud = baud; return true; }
+    if (transact(SV_PING, nullptr, 0, st, nullptr, n)) { foundBaud = baud; clearError(); return true; }
   }
   busBegin(original);
   setError("no servo found at any baud");
