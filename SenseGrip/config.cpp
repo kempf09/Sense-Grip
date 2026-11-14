@@ -3,7 +3,7 @@
 #include <math.h>
 
 namespace {
-constexpr uint8_t CFG_VERSION = 1;
+constexpr uint8_t CFG_VERSION = 2;   // 2: speeds in servo steps/s (v1 used 1..61)
 
 // Release 3.0.3 FsmConfig layout, copied verbatim for migration (read-only).
 struct FsmConfig {
@@ -22,13 +22,19 @@ struct FsmConfig {
 };
 constexpr uint32_t FSM_MAGIC = 0x46534D34;
 
-bool loadNew(GripConfig& out) {
+// Returns true when sgcfg held a usable blob; sets upgraded when it was version 1.
+bool loadNew(GripConfig& out, bool& upgraded) {
+  upgraded = false;
   Preferences p;
   if (!p.begin("sgcfg", true)) return false;
   bool ok = false;
-  if (p.getUChar("ver", 0) == CFG_VERSION && p.getBytesLength("cfg") == sizeof(GripConfig)) {
+  const uint8_t ver = p.getUChar("ver", 0);
+  if ((ver == CFG_VERSION || ver == 1) && p.getBytesLength("cfg") == sizeof(GripConfig)) {
     GripConfig tmp;
-    if (p.getBytes("cfg", &tmp, sizeof(tmp)) == sizeof(tmp)) { out = tmp; ok = true; }
+    if (p.getBytes("cfg", &tmp, sizeof(tmp)) == sizeof(tmp)) {
+      if (ver == 1) { upgradeFromV1(tmp); upgraded = true; }
+      out = tmp; ok = true;
+    }
   }
   p.end();
   return ok;
@@ -67,7 +73,10 @@ bool configSave(const GripConfig& c) {
 
 GripConfig configLoad() {
   GripConfig c = defaultConfig();
-  if (!loadNew(c)) {
+  bool upgraded = false;
+  if (loadNew(c, upgraded)) {
+    if (upgraded) { clampConfig(c); configSave(c); }   // keeps limits, replaces old speeds
+  } else {
     c = defaultConfig();
     if (loadLegacy(c)) {
       clampConfig(c);

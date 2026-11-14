@@ -85,10 +85,10 @@ label.f{display:block;font-size:13px;color:var(--mu)}
  <div class="grid">
   <div class="panel"><h2>Telemetry</h2><table id="svTbl"></table></div>
   <div class="panel"><h2>Manual</h2>
-   <div class="row"><label class="f">Jog speed (1-61)<input type="number" id="jogSpd" min="1" max="61" value="20"></label></div>
+   <div class="row"><label class="f">Jog speed (steps/s, 1-3400; 4096 = 1 rev/s)<input type="number" id="jogSpd" min="1" max="3400" value="400"></label><label class="f"><span>Ignore limits while jogging</span><input type="checkbox" id="jogIgn"></label></div>
    <div class="btns"><button class="b jog" id="jogC">Jog Close (hold)</button><button class="b jog" id="jogO">Jog Open (hold)</button></div>
    <div class="btns" style="margin-top:8px"><button class="b" id="setOpen">Set OPEN zero here</button><button class="b" id="setClose">Set close limit here</button></div>
-   <div class="btns" style="margin-top:8px"><button class="b" id="scan">Scan</button></div>
+   <div class="btns" style="margin-top:8px"><button class="b" id="clearLim">Clear limits</button><button class="b" id="posMode">Set position mode (0)</button><button class="b" id="scan">Scan</button></div>
    <p class="small">Jog is only accepted while IDLE and disarmed. After jogging or setting limits, press Open again before arming. Limits: <span id="limTxt">-</span></p>
    <button class="estop" id="estop2">E-STOP</button></div>
  </div>
@@ -249,7 +249,7 @@ function drawTof(){
 
 /* ---------- config forms ---------- */
 var FORMS={
- svCfg:[['approachSpeed','Approach speed'],['graspSpeed','Grasp speed'],['openSpeed','Open speed'],['closeTorqueLimit','Close torque limit'],['openTorqueLimit','Open torque limit'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['runViaPosition','Run via position','b'],['closePositive','Close = positive','b']],
+ svCfg:[['approachSpeed','Approach speed (steps/s)'],['graspSpeed','Grasp speed (steps/s)'],['openSpeed','Open speed (steps/s)'],['closeTorqueLimit','Close torque limit'],['openTorqueLimit','Open torque limit'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['runViaPosition','Run via position','b'],['closePositive','Close = positive','b']],
  fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspForceN','Grasp force N'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
  tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']]
 };
@@ -310,11 +310,11 @@ function jogStop(){
   sendStop();
 }
 function jogStart(dir){
-  var sp=Math.max(1,Math.min(61,parseInt($('jogSpd').value,10)||20));
+  var sp=Math.max(1,Math.min(3400,parseInt($('jogSpd').value,10)||400)),ign=$('jogIgn').checked?1:0;
   var send=function(){
     if(jogBusy||!jogging)return;           /* one jog POST in flight at a time */
     jogBusy=true;
-    post('/api/servo/jog',{speed:dir*sp}).then(function(){
+    post('/api/servo/jog',{speed:dir*sp,ignoreLimits:ign}).then(function(){
       jogBusy=false;
       if(!jogging)sendStop();              /* released while pending: the jog may have landed after the stop */
     });
@@ -332,6 +332,10 @@ document.addEventListener('visibilitychange',function(){if(document.hidden)jogSt
 $('setOpen').onclick=function(){post('/api/servo/setOpen')};
 $('setClose').onclick=function(){post('/api/servo/setClose')};
 $('scan').onclick=function(){post('/api/servo/scan')};
+$('clearLim').onclick=function(){if(confirm('Clear OPEN zero and close limit? You will need to set both again.'))post('/api/servo/clearLimits')};
+$('posMode').onclick=function(){post('/api/servo/positionMode')};
+/* Ignore-limits is one-shot: it switches itself off after each jog release. */
+['jogC','jogO'].forEach(function(id){$(id).addEventListener('pointerup',function(){setTimeout(function(){$('jogIgn').checked=false},0)})});
 
 /* ---------- FSR ---------- */
 var CAL=null;

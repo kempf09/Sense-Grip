@@ -4,7 +4,7 @@
 GripConfig defaultConfig() {
   GripConfig c{};
   c.openZero = 0; c.closeLimit = 0; c.limitsValid = false; c.closePositive = true;
-  c.approachSpeed = 61; c.graspSpeed = 10; c.openSpeed = 61;
+  c.approachSpeed = 2000; c.graspSpeed = 300; c.openSpeed = 2000;
   c.closeTorqueLimit = 200; c.openTorqueLimit = 260;
   c.openToleranceCounts = 8; c.limitSlackCounts = 200;
   c.contactForceN = 0.25f; c.contactSamples = 3;
@@ -39,9 +39,9 @@ bool clampConfig(GripConfig& c) {
   bool ch = false;
   ch |= clampInt(c.openZero, -32767, 32767);
   ch |= clampInt(c.closeLimit, -32767, 32767);
-  ch |= clampInt(c.approachSpeed, 1, 61);
-  ch |= clampInt(c.graspSpeed, 1, 61);
-  ch |= clampInt(c.openSpeed, 1, 61);
+  ch |= clampInt(c.approachSpeed, 1, SPEED_MAX);
+  ch |= clampInt(c.graspSpeed, 1, SPEED_MAX);
+  ch |= clampInt(c.openSpeed, 1, SPEED_MAX);
   ch |= clampInt(c.closeTorqueLimit, 1, 430);
   ch |= clampInt(c.openTorqueLimit, 1, 430);
   ch |= clampInt(c.openToleranceCounts, 1, 200);
@@ -65,4 +65,11 @@ const char* limitsProblem(const GripConfig& c) {
   bool ok = c.closePositive ? (c.closeLimit > c.openZero) : (c.closeLimit < c.openZero);
   if (!ok) return "close limit is not on the closing side of OPEN zero";
   return nullptr;
+}
+
+void upgradeFromV1(GripConfig& c) {
+  const GripConfig d = defaultConfig();
+  c.approachSpeed = d.approachSpeed;
+  c.graspSpeed = d.graspSpeed;
+  c.openSpeed = d.openSpeed;
 }

@@ -46,6 +46,7 @@ struct Ctl {
   Fsm fsm;
   bool jogActive = false;
   int16_t jogSpeed = 0;
+  bool jogIgnoreLimits = false;
   bool stopPending = false;
   uint8_t stopFails = 0;
   uint32_t jogLastMs = 0;
@@ -112,7 +113,9 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
   const char* what = r.kind == ControlRequest::JOG ? "jog"
                    : r.kind == ControlRequest::SET_OPEN ? "set open"
                    : r.kind == ControlRequest::SET_CLOSE ? "set close"
-                   : r.kind == ControlRequest::SCAN ? "scan" : "config";
+                   : r.kind == ControlRequest::SCAN ? "scan"
+                   : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits"
+                   : r.kind == ControlRequest::SET_POSITION_MODE ? "set position mode" : "config";
   State st = c.fsm.state();
   if (st != State::IDLE && st != State::FAULT) {
     say(c, false, "%s only allowed in IDLE or FAULT (now %s)", what, stateName(st));
@@ -123,18 +126,18 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
   switch (r.kind) {
     case ControlRequest::JOG: {
       if (c.fsm.armed()) { say(c, false, "disarm before jogging"); return; }
-      if (c.cfg.runViaPosition && !c.cfg.limitsValid) {
-        say(c, false, "set limits before enabling run-via-position jog");
+      if (c.cfg.runViaPosition && (!c.cfg.limitsValid || r.ignoreLimits)) {
+        say(c, false, "run-via-position jog needs valid limits and can't ignore them; untick runViaPosition to jog freely");
         return;
       }
       if (!sv.online) { say(c, false, "jog refused: servo offline"); return; }
       int16_t sp = r.speed;
-      if (sp > 61) sp = 61;
-      if (sp < -61) sp = -61;
+      if (sp > (int16_t)SPEED_MAX) sp = SPEED_MAX;
+      if (sp < -(int16_t)SPEED_MAX) sp = -(int16_t)SPEED_MAX;
       if (sp == 0) { jogStop(c); say(c, true, "jog stopped"); return; }
-      if (jogPastLimit(c.cfg, sp, sv.fb.position)) {
+      if (!r.ignoreLimits && jogPastLimit(c.cfg, sp, sv.fb.position)) {
         jogStop(c);
-        say(c, false, "jog refused: %s limit reached", sp > 0 ? "close" : "open");
+        say(c, false, "jog refused: %s limit reached (tick 'Ignore limits' to go past it)", sp > 0 ? "close" : "open");
         return;
       }
       uint16_t tq = sp > 0 ? c.cfg.closeTorqueLimit : c.cfg.openTorqueLimit;
@@ -147,8 +150,9 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       }
       c.jogActive = true;
       c.jogSpeed = sp;
+      c.jogIgnoreLimits = r.ignoreLimits;
       c.jogLastMs = now;
-      say(c, true, "jogging");
+      say(c, true, r.ignoreLimits ? "jogging (limits ignored)" : "jogging");
       return;
     }
     case ControlRequest::SET_OPEN:
@@ -168,6 +172,24 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       if (prob) say(c, true, "%s saved at %ld; limits not valid yet (%s)", what, (long)sv.fb.position,
                     isOpen ? "set CLOSE limit on the closing side" : "set OPEN zero on the opening side");
       else say(c, true, "%s saved at %ld", what, (long)sv.fb.position);
+      return;
+    }
+    case ControlRequest::CLEAR_LIMITS: {
+      jogStop(c);
+      GripConfig n = c.cfg;
+      n.limitsValid = false;
+      if (!configSave(n)) { say(c, false, "clear limits failed: could not save config"); return; }
+      c.cfg = n;
+      applyConfig(c);
+      c.fsm.invalidateOpened();
+      say(c, true, "limits cleared: jog freely, then set OPEN zero and close limit again");
+      return;
+    }
+    case ControlRequest::SET_POSITION_MODE: {
+      jogStop(c);
+      if (!sv.online) { say(c, false, "set position mode refused: servo offline"); return; }
+      if (servoForcePositionMode()) say(c, true, "servo set to position mode 0 (torque off)");
+      else say(c, false, "set position mode failed: %s", servoGet().lastError);
       return;
     }
     case ControlRequest::SCAN: {
@@ -261,7 +283,7 @@ void publish(Ctl& c) {
 void bootStop(Ctl& c) {
   const uint32_t t0 = millis();
   for (;;) {
-    if (servoBootStop()) { say(c, true, "servo stopped at boot (torque off, goal speed 0)"); return; }
+    if (servoBootStop()) { say(c, true, "servo stopped at boot (torque off)"); return; }
     if ((uint32_t)(millis() - t0) >= BOOT_STOP_WINDOW_MS) break;
     vTaskDelay(pdMS_TO_TICKS(BOOT_STOP_RETRY_MS));
   }
@@ -274,11 +296,14 @@ void retryBootStop(Ctl& c) {
   // Once the FSM or a jog drives the servo, its commands replace the stale goal.
   State st = c.fsm.state();
   if (c.jogActive || (st != State::IDLE && st != State::FAULT)) { c.bootStopPending = false; return; }
+  // Rate-limited: with the servo unreachable each attempt costs bus timeouts.
+  static uint32_t lastTry = 0;
+  const uint32_t now = millis();
+  if ((uint32_t)(now - lastTry) < 250) return;
+  lastTry = now;
   if (servoBootStop()) {
     c.bootStopPending = false;
     say(c, true, "servo stopped (after boot retries)");
-  } else {
-    say(c, false, "could not stop servo at boot: %s", servoGet().lastError);
   }
 }
 
@@ -314,7 +339,7 @@ void controlTask(void*) {
     if (c->jogActive && fst != State::IDLE && fst != State::FAULT) c->jogActive = false;
     retryStop(*c);
     retryBootStop(*c);
-    if (c->jogActive && c->cfg.limitsValid) {
+    if (c->jogActive && c->cfg.limitsValid && !c->jogIgnoreLimits) {
       ServoSnapshot js = servoGet();
       if (!js.online || js.ageMs > SERVO_FRESH_MS) {
         jogStop(*c);

@@ -5,8 +5,8 @@
 #include "fsm_core.h"
 
 struct ControlRequest {
-  enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG } kind;
-  Cmd cmd; int16_t speed; GripConfig cfg;
+  enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG, CLEAR_LIMITS, SET_POSITION_MODE } kind;
+  Cmd cmd; int16_t speed; bool ignoreLimits; GripConfig cfg;   // ignoreLimits: JOG only
 };
 
 struct ControlStatus {

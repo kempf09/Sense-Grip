@@ -353,10 +353,14 @@ static void handleZeroPost() {
 // ---------------------------------------------------------------- servo
 static void handleJog() {
   long long v;
-  if (!server.hasArg("speed") || !parseI(server.arg("speed"), -61, 61, v) || v == 0) {
+  if (!server.hasArg("speed") || !parseI(server.arg("speed"), -(long long)SPEED_MAX, SPEED_MAX, v) || v == 0) {
     sendError(400, "invalid value for field", "speed"); return;
   }
-  ControlRequest r = blankReq(ControlRequest::JOG); r.speed = (int16_t)v;
+  bool ignore = false;
+  if (server.hasArg("ignoreLimits") && !parseBool(server.arg("ignoreLimits"), ignore)) {
+    sendError(400, "invalid value for field", "ignoreLimits"); return;
+  }
+  ControlRequest r = blankReq(ControlRequest::JOG); r.speed = (int16_t)v; r.ignoreLimits = ignore;
   sendQueued(r);
 }
 
@@ -384,6 +388,8 @@ void webBegin() {
   server.on("/api/servo/setOpen", HTTP_POST, [] { simple(ControlRequest::SET_OPEN); });
   server.on("/api/servo/setClose", HTTP_POST, [] { simple(ControlRequest::SET_CLOSE); });
   server.on("/api/servo/scan", HTTP_POST, [] { simple(ControlRequest::SCAN); });
+  server.on("/api/servo/clearLimits", HTTP_POST, [] { simple(ControlRequest::CLEAR_LIMITS); });
+  server.on("/api/servo/positionMode", HTTP_POST, [] { simple(ControlRequest::SET_POSITION_MODE); });
   server.on("/api/fsm/arm", HTTP_POST, [] { fsmCmd(Cmd::ARM); });
   server.on("/api/fsm/disarm", HTTP_POST, [] { fsmCmd(Cmd::DISARM); });
   server.on("/api/fsm/open", HTTP_POST, [] { fsmCmd(Cmd::OPEN); });

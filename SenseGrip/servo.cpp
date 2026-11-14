@@ -118,16 +118,15 @@ void put16(uint16_t v, uint8_t* p) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8)
 
 bool torqueOff() { const uint8_t off = 0; return writeRegs(40, &off, 1); }
 
-// Torque off, then goal speed 0 (regs 46..47, so a later torque-on in speed mode does
-// not spin), then torque off again in case the speed write re-enabled torque. Torque
-// goes off first so a zero speed is never applied in position mode with torque on.
-// Each torque-off write is retried once. Leaves lastError alone on success.
-bool stopWrites(bool& speedZeroed) {
-  bool off = torqueOff() || torqueOff();
+// Stop the same way the Release 3.0.3 firmware did on this servo: torque limit 0
+// (regs 44..45), then torque off (reg 40, retried once). Never writes the goal speed
+// or goal position: on this servo a goal write re-enables torque, and goal speed 0 means
+// full speed in position mode (observed: the gripper drove to OPEN while in FAULT).
+// Every later verb rewrites the torque limit before enabling torque.
+bool stopWrites() {
   const uint8_t zero[2] = {0, 0};
-  speedZeroed = writeRegs(46, zero, 2);
-  if (speedZeroed) off = torqueOff() || torqueOff();
-  return off;
+  writeRegs(44, zero, 2);            // best effort
+  return torqueOff() || torqueOff();
 }
 
 // Cleanup stop after a failed verb: keeps the original error, appends a note if the
@@ -135,8 +134,7 @@ bool stopWrites(bool& speedZeroed) {
 void cleanupStop() {
   char orig[sizeof(snap.lastError)];
   getError(orig, sizeof(orig));
-  bool sp;
-  if (stopWrites(sp)) { setError(orig); return; }
+  if (stopWrites()) { setError(orig); return; }
   char e[sizeof(snap.lastError)];
   snprintf(e, sizeof(e), "%.40s; stop failed too", orig);
   setError(e);
@@ -251,15 +249,21 @@ bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit) {
 }
 
 bool servoStop() {
-  bool speedZeroed;
-  if (!stopWrites(speedZeroed)) return false;
+  if (!stopWrites()) return false;
   clearError();
   return true;
 }
 
-bool servoBootStop() {
-  bool speedZeroed;
-  if (!stopWrites(speedZeroed) || !speedZeroed) return false;
+bool servoBootStop() { return servoStop(); }
+
+bool servoForcePositionMode() {
+  if (!stopWrites()) return false;
+  const uint8_t zero = 0;
+  if (!writeRegs(33, &zero, 1)) {
+    portENTER_CRITICAL(&mux); snap.modeKnown = false; snap.mode = 255; portEXIT_CRITICAL(&mux);
+    return false;
+  }
+  portENTER_CRITICAL(&mux); snap.mode = 0; snap.modeKnown = true; portEXIT_CRITICAL(&mux);
   clearError();
   return true;
 }

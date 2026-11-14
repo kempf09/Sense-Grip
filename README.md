@@ -47,8 +47,12 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
 
 Notes:
 
-- At every power-up or ESP32 reset the firmware first switches servo torque off and sets its goal
-  speed to 0 (the servo keeps running its last command across an ESP32 reset). It retries for 1 s;
+- Speeds are in servo steps per second (4096 steps = one turn; 2000 steps/s is about 29 RPM).
+  Defaults: approach 2000, grasp 300, open 2000; maximum 3400. Settings saved by earlier builds
+  (which capped speed at 61, about 1 RPM) get these new speeds on first boot; limits are kept.
+- At every power-up or ESP32 reset the firmware first sets the servo torque limit to 0 and switches
+  torque off (the servo keeps running its last command across an ESP32 reset). A stop never writes
+  a goal speed or position: on this servo that re-enables torque. It retries for 1 s;
   if the servo still does not answer, Last action shows `could not stop servo at boot: <error>` and
   it keeps retrying until it does.
 - The servo must keep its multi-turn position across a power cycle (hardware checklist step 10).
@@ -59,7 +63,15 @@ Notes:
   firmware. Close limit = old TOUCH minus the old safety margin (default 100 counts), backed off toward open. All other old settings start from
   defaults.
 - Jogging is refused while armed (disarm first). A jog stops by itself if the button is released,
-  the page loses focus, or 300 ms pass without a repeat. Once both limits are set, jog stops at them.
+  the page loses focus, or 300 ms pass without a repeat. Once both limits are set, jog stops at them;
+  tick **Ignore limits while jogging** to go past them (one jog, then it unticks itself). Not
+  available with "Run via position".
+- **Clear limits** (Servo tab) forgets OPEN zero and close limit so you can set them again.
+- **Set position mode (0)** (Servo tab) switches torque off and puts the servo in position mode.
+  Use it if the Servo tab shows a mode other than 0 while idle.
+- A ToF sensor with read errors keeps its last frame for up to 500 ms (ignored for triggering after
+  that). It is only restarted after 5 s without a good frame, and only shown offline when it also
+  stops answering on the I2C bus.
   The Servo tab has its own E-STOP button, always enabled.
 - After a jog, Set OPEN zero, Set close limit, or a change of "Close = positive" or "Run via
   position", press Open again before arming.
@@ -134,6 +146,8 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/setOpen` | Save current position as OPEN zero |
 | `/api/servo/setClose` | Save current position as close limit |
 | `/api/servo/scan` | Find servo baud rate |
+| `/api/servo/clearLimits` | Forget OPEN zero and close limit |
+| `/api/servo/positionMode` | Torque off, servo mode 0 |
 | `/api/fsm/arm`, `/api/fsm/disarm` | Arm / disarm |
 | `/api/fsm/open` | Go to OPEN zero |
 | `/api/fsm/estop` | Emergency stop, FAULT |

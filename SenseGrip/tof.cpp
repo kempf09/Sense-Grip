@@ -14,6 +14,16 @@ DFRobot_MatrixLidar_I2C lidar2(TOF_ADDR[2], &Wire);
 DFRobot_MatrixLidar_I2C* const lidar[TOF_COUNT] = {&lidar0, &lidar1, &lidar2};
 
 constexpr uint32_t RETRY_MS = 2000;
+// Read errors in short streaks are normal on these sensors (Release 3.0.3 just counted
+// them). A sensor is only re-initialised after this long without a good frame, and only
+// marked offline when it also stops answering on the bus. Stale frames are ignored by the
+// presence logic after 500 ms either way (tof_detect).
+constexpr uint32_t STALL_MS = 5000;
+
+bool probe(uint8_t i) {
+  Wire.beginTransmission(TOF_ADDR[i]);
+  return Wire.endTransmission() == 0;
+}
 
 TofSnapshot gSnap = {};
 uint16_t gDetectMm = 80;
@@ -103,9 +113,14 @@ void tofTask(void*) {
         if (rc == 0) {
           lastGood[i] = lastProgress[i] = now;
           everGood[i] = true;
-        } else if (now - lastProgress[i] > 1000) {
+        } else if (now - lastProgress[i] > STALL_MS) {
           lastTry[i] = now;
-          setOnline(i, false, now);
+          if (!probe(i)) {
+            setOnline(i, false, now);                 // gone from the bus: retry init every 2 s
+          } else {
+            lastProgress[i] = now;                    // still answering: restart ranging in place
+            initSensor(i);
+          }
         }
       }
 

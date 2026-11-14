@@ -105,7 +105,7 @@ TEST(fsm_arm_then_trigger_runs_approach) {
   a = f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
   CHECK(a.kind == MotorAction::RUN);
-  CHECK_EQ(a.speed, 61);
+  CHECK_EQ(a.speed, 2000);
   CHECK_EQ(a.torque, 200);
 }
 
@@ -145,7 +145,7 @@ TEST(fsm_contact_switches_to_grasp_speed) {
   MotorAction a = f.step(in);
   CHECK(f.state() == State::GRASP);
   CHECK(a.kind == MotorAction::RUN);
-  CHECK_EQ(a.speed, 10);
+  CHECK_EQ(a.speed, 300);
   CHECK_EQ(a.torque, 200);
 }
 
@@ -167,7 +167,7 @@ TEST(fsm_grasp_needs_samples_and_channels) {
   CHECK(f.state() == State::MONITOR);
   CHECK(a.kind == MotorAction::HOLD);
   CHECK_EQ(a.torque, 200);
-  CHECK_EQ(a.speed, 10);
+  CHECK_EQ(a.speed, 300);
   in.fsrSeq = 203;
   CHECK(f.step(in).kind == MotorAction::NONE);  // MONITOR: no automatic action
   CHECK(f.state() == State::MONITOR);
@@ -292,7 +292,7 @@ TEST(fsm_open_from_monitor_returns_idle_disarmed) {
   CHECK(f.state() == State::OPEN);
   CHECK(a.kind == MotorAction::MOVE);
   CHECK_EQ(a.position, 1968);
-  CHECK_EQ(a.speed, 61);
+  CHECK_EQ(a.speed, 2000);
   CHECK_EQ(a.torque, 260);
   CHECK(cmd(f, in, Cmd::OPEN).kind == MotorAction::NONE);  // OPEN in OPEN: no-op
   in.position = 1980; in.avgContactForce = 0; in.anyFingerContact = false;
@@ -302,7 +302,7 @@ TEST(fsm_open_from_monitor_returns_idle_disarmed) {
   CHECK(f.state() == State::IDLE);
   CHECK(a.kind == MotorAction::HOLD);
   CHECK_EQ(a.torque, 260);
-  CHECK_EQ(a.speed, 61);
+  CHECK_EQ(a.speed, 2000);
   CHECK(!f.armed());
 }
 
@@ -466,7 +466,7 @@ TEST(fsm_disarm_in_pretouch_opens) {
   CHECK(f.state() == State::OPEN);
   CHECK(a.kind == MotorAction::MOVE);
   CHECK_EQ(a.position, 1968);
-  CHECK_EQ(a.speed, 61);
+  CHECK_EQ(a.speed, 2000);
   CHECK_EQ(a.torque, 260);
   CHECK(std::strcmp(f.reason(), "Disarmed during PRE_TOUCH — opening") == 0);
   in.position = 1970;                          // arrives at OPEN: IDLE, disarmed
