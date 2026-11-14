@@ -20,4 +20,5 @@ void controlBegin();                              // creates the request queue (
 bool controlEnqueue(const ControlRequest& r);     // 0 wait; false when full
 void controlRequestEstop();                       // checked first every iteration -> Cmd::ESTOP
 ControlStatus controlGet();
+GripConfig controlGetConfig();                    // copy of the active config (any task)
 void controlTask(void*);

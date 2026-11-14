@@ -13,6 +13,7 @@
 static QueueHandle_t gQueue = nullptr;
 static ControlStatus gStatus;
 static volatile bool gEstopReq = false;
+static GripConfig gCfgPub;
 
 static constexpr uint32_t JOG_DEADMAN_MS = 300;
 static constexpr uint32_t SERVO_FRESH_MS = 100;
@@ -34,6 +35,7 @@ void controlRequestEstop() {
 }
 
 ControlStatus controlGet() { return snap(gStatus); }
+GripConfig controlGetConfig() { return snap(gCfgPub); }
 
 namespace {
 
@@ -41,6 +43,9 @@ struct Ctl {
   GripConfig cfg;
   Fsm fsm;
   bool jogActive = false;
+  int16_t jogSpeed = 0;
+  bool stopPending = false;
+  uint8_t stopFails = 0;
   uint32_t jogLastMs = 0;
   char msg[96] = "";
   bool msgOk = true;
@@ -57,14 +62,29 @@ void say(Ctl& c, bool ok, const char* fmt, ...) {
 }
 
 void applyConfig(Ctl& c) {
+  portENTER_CRITICAL(&gMux);
+  gCfgPub = c.cfg;
+  portEXIT_CRITICAL(&gMux);
   c.fsm.setConfig(c.cfg);
   servoSetRunViaPosition(c.cfg.runViaPosition, c.cfg.closeLimit, c.cfg.openZero, c.cfg.closePositive);
   tofSetDetect(c.cfg.detectMm, c.cfg.detectHoldMs, c.cfg.tofMask);
 }
 
+// Stops a jog; a failed servoStop() is retried every iteration (see retryStop).
 void jogStop(Ctl& c) {
-  if (c.jogActive) servoStop();
+  if (!c.jogActive) return;
   c.jogActive = false;
+  if (!servoStop()) { c.stopPending = true; c.stopFails = 1; }
+}
+
+void retryStop(Ctl& c) {
+  if (!c.stopPending) return;
+  if (servoStop()) { c.stopPending = false; c.stopFails = 0; return; }
+  if (++c.stopFails >= 3) {
+    c.stopPending = false;
+    c.stopFails = 0;
+    c.fsm.motorFailed(servoGet().lastError);
+  }
 }
 
 // Soft-limit check for a jog; only enforced once limits are valid.
@@ -99,6 +119,11 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
 
   switch (r.kind) {
     case ControlRequest::JOG: {
+      if (c.fsm.armed()) { say(c, false, "disarm before jogging"); return; }
+      if (c.cfg.runViaPosition && !c.cfg.limitsValid) {
+        say(c, false, "set limits before enabling run-via-position jog");
+        return;
+      }
       if (!sv.online) { say(c, false, "jog refused: servo offline"); return; }
       int16_t sp = r.speed;
       if (sp > 61) sp = 61;
@@ -111,12 +136,13 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       }
       uint16_t tq = sp > 0 ? c.cfg.closeTorqueLimit : c.cfg.openTorqueLimit;
       if (!servoRunAt(sp, tq)) {
-        c.jogActive = false;
-        servoStop();
+        c.jogActive = true;   // so jogStop() sends and retries the stop
+        jogStop(c);
         say(c, false, "jog failed: %s", servoGet().lastError);
         return;
       }
       c.jogActive = true;
+      c.jogSpeed = sp;
       c.jogLastMs = now;
       say(c, true, "jogging");
       return;
@@ -241,6 +267,20 @@ void controlTask(void*) {
       if (xQueueReceive(gQueue, &r, 0) == pdTRUE) handleRequest(*c, r, now, cmd);
     }
 
+    // The FSM owns the motor whenever it is not IDLE/FAULT: drop the jog without touching the servo.
+    State fst = c->fsm.state();
+    if (c->jogActive && fst != State::IDLE && fst != State::FAULT) c->jogActive = false;
+    retryStop(*c);
+    if (c->jogActive && c->cfg.limitsValid) {
+      ServoSnapshot js = servoGet();
+      if (!js.online || js.ageMs > SERVO_FRESH_MS) {
+        jogStop(*c);
+        say(*c, false, "jog stopped: stale servo position");
+      } else if (jogPastLimit(c->cfg, c->jogSpeed, js.fb.position)) {
+        jogStop(*c);
+        say(*c, false, "jog stopped: %s limit reached", c->jogSpeed > 0 ? "close" : "open");
+      }
+    }
     if (c->jogActive && (uint32_t)(now - c->jogLastMs) >= JOG_DEADMAN_MS) {
       jogStop(*c);
       say(*c, true, "jog stopped (no repeat within %u ms)", (unsigned)JOG_DEADMAN_MS);
