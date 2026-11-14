@@ -39,14 +39,14 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
    servo ID stays at the saved value (default 1). There are no ID or baud fields.
 4. Jog the fingers to fully open, press **Set OPEN zero here**.
 5. Jog to fully closed, press **Set close limit here**.
-6. Press **Open**. The gripper goes to the OPEN zero and sits in IDLE.
+6. Press **Open**. The gripper goes to the OPEN zero and sits in IDLE. Open is refused while any servo blocker shows, including "Full angle: NO" (see "Why won't it arm?").
 7. FSR tab: calibrate each channel, then Zero each one with nothing touching it.
 8. Press **Arm**. Bring an object within the detect distance and it closes.
 
 Notes:
 
 - Saved FSR calibration (NVS `fsr402`) and the old OPEN/TOUCH references carry over from the old
-  firmware. Close limit = old TOUCH minus a 100 count margin. All other old settings start from
+  firmware. Close limit = old TOUCH minus the old safety margin (default 100 counts), backed off toward open. All other old settings start from
   defaults.
 - Jogging is refused while armed (disarm first). A jog stops by itself if the button is released,
   the page loses focus, or 300 ms pass without a repeat. Once both limits are set, jog stops at them.
@@ -87,14 +87,14 @@ The dashboard lists every blocker. Arm is refused while any is present.
 |---|---|
 | `servo offline or feedback stale` | Check servo power and bus wiring; Servo tab, press Scan (gripper idle and clear). |
 | `servo status: ...` | The servo reports voltage, temperature or overload. Fix the cause, power-cycle if needed. |
-| `servo multi-turn (full-angle) feedback off` | Servo setting; needed for position across several turns. Enable it on the servo. |
+| `servo multi-turn (full-angle) feedback off` | The firmware cannot change this. Set the CF35-12 to multi-turn / full-angle mode with the Waveshare servo configuration tool (the bit reads as register 18 bit 4), then power-cycle the servo. The old firmware needed the same setting, so a servo that worked with it is already set. The Servo tab shows "Full angle: NO" when it is off. Open is refused for this reason too. |
 | `OPEN zero / close limit not set` | Do first-boot steps 4 and 5. |
 | `close limit is not on the closing side of OPEN zero` | Set the limits again with the fingers jogged the right way round. |
 | `not at OPEN — press Open once after power-up` | Press Open. Also needed after every FAULT. |
 | `FSR n not calibrated` | Calibrate channel n on the FSR tab. |
 | `FSR n loaded at rest` | Something is pressing on pad n. Remove it, or Zero the channel. |
 | `no ToF sensor online` | Check I2C wiring and sensor power. |
-| `not armed` | The only one left? Press Arm. |
+| `not armed` | Press Arm (only blocker left). |
 
 ## API
 
