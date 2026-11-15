@@ -41,7 +41,9 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
 4. Jog the fingers to fully open, press **Set OPEN zero here**.
 5. **Run calibration sweep** (Servo tab, gripper empty, nothing in the SEN0628 view). It goes to
    OPEN zero, closes slowly in 100-count steps recording all three SEN0628 at each step, and stops
-   when a fingertip FSR shows the tips touching. That point is the **touch reference**; the close
+   when a fingertip FSR shows the tips touching. Each step that stops short (stiffer mechanism)
+   is recorded where it stopped; the sweep only aborts if the jaw does not move at all, and then
+   says where it stopped, how far short, and the motor current and load. That point is the **touch reference**; the close
    limit is set 100 counts before it. The sweep is saved to the ESP32's flash (`/sweep.bin`,
    LittleFS) only if it completes; it then opens. Run it again after mechanical changes.
 6. FSR tab: calibrate each channel, then Zero each one with nothing touching it.
@@ -52,7 +54,7 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
 The servo keeps its angle within one turn but loses the turn count at power-up, so after every
 power-up (and every ESP32 restart) the dashboard shows **NOT HOMED** and refuses Open and Arm.
 Empty the gripper and press **Home** (Combined or Servo tab): the fingers close slowly (speed 5,
-low current) until a fingertip FSR shows the tips touching, the firmware picks the turn that puts
+at the Close max current setting, default 200 = 1.3 A) until a fingertip FSR shows the tips touching, the firmware picks the turn that puts
 that point nearest the touch reference, and the gripper opens. Home fails, without moving
 further, if the touch point is more than 600 counts from the reference (an object in the gripper?),
 if the jaw stops without fingertip contact, or if the SEN0628 estimate points to a different turn.

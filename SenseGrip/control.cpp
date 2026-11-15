@@ -73,7 +73,7 @@ struct Ctl {
   bool openZeroSetThisBoot = false;
   // Calibration sweep (spec §6.3)
   bool sweeping = false; uint8_t swPhase = 0; uint32_t swT0 = 0, swPhaseMs = 0;
-  int swN = 0; int32_t swTarget = 0; uint32_t swOk[3] = {0, 0, 0}; uint8_t swContact = 0; uint32_t swFsrSeq = 0;
+  int swN = 0; int32_t swTarget = 0, swStepStart = 0, swProgPos = 0; uint32_t swProgMs = 0; uint32_t swOk[3] = {0, 0, 0}; uint8_t swContact = 0; uint32_t swFsrSeq = 0;
   SensorCalib cal[3];
   // SEN0628 power-up estimate and running position check (spec §6.4)
   PosEstimate est = {false, 0, 0}; int32_t estRaw = 0; uint32_t estMs = 0;
@@ -126,7 +126,9 @@ bool jogPastLimit(const GripConfig& g, int16_t speed, int32_t pos) {
 }
 
 // ---- Homing (close-to-touch), spec §6.2 ----
-constexpr uint16_t HOME_SPEED = 5, HOME_CURRENT = 120, UNSTICK_CURRENT = 415;
+// Home and sweep close with the configured close current (closeTorqueLimit, default 200 = 1.3 A).
+// 120 (0.8 A) was too weak: on hardware the sweep stalled after 20-40 steps as the mechanism stiffens.
+constexpr uint16_t HOME_SPEED = 5, UNSTICK_CURRENT = 415;
 constexpr uint32_t HOME_TIMEOUT_MS = 120000, UNSTICK_MS = 500, HOME_STEP_MS = 200;
 constexpr int32_t HOME_MAX_RESIDUAL = 600;
 const uint8_t DISTAL_FSR[3] = {5, 3, 4};               // FINGER_FSR_MAP[f][0]
@@ -226,7 +228,7 @@ void homeStart(Ctl& c, const ServoSnapshot& sv, uint32_t now) {
   c.homeUnstickUsed = false; c.homeUnstickActive = false; c.homeContact = 0; c.homeFsrSeq = fs.seq;
   snprintf(c.homeMsg, sizeof(c.homeMsg), "homing...");
   say(c, true, "Home: closing slowly to fingertip contact");
-  homeStep(c, sv, HOME_CURRENT);
+  homeStep(c, sv, c.cfg.closeTorqueLimit);
 }
 
 // Runs every loop iteration while homing.
@@ -255,17 +257,18 @@ void homeUpdate(Ctl& c, uint32_t now) {
       homeStep(c, sv, UNSTICK_CURRENT);
       return;
     }
-    homeStop(c, false, "failed: jaw stopped without fingertip contact");
+    homeStop(c, false, "failed: jaw stopped at %ld without tip contact (%d mA, load %.0f%%)",
+             (long)sv.fb.position, (int)(sv.fb.current * 6.5f), (double)(sv.fb.load * 100.0f));
     return;
   }
   if ((uint32_t)(now - c.homeStepMs) >= HOME_STEP_MS) {
     c.homeStepMs = now;
-    homeStep(c, sv, c.homeUnstickActive ? UNSTICK_CURRENT : HOME_CURRENT);
+    homeStep(c, sv, c.homeUnstickActive ? UNSTICK_CURRENT : c.cfg.closeTorqueLimit);
   }
 }
 
 // ---- Calibration sweep (spec §6.3) ----
-constexpr uint16_t SWEEP_SPEED = 5, SWEEP_CURRENT = 120;
+constexpr uint16_t SWEEP_SPEED = 5;
 constexpr int32_t SWEEP_STEP = 100;
 constexpr uint32_t SWEEP_TIMEOUT_MS = 400000, SWEEP_FRAME_WAIT_MS = 1000, SWEEP_MOVE_WAIT_MS = 5000;
 enum : uint8_t { SW_TO_OPEN = 0, SW_MOVE, SW_FRAMES };
@@ -356,15 +359,28 @@ void sweepUpdate(Ctl& c, uint32_t now) {
       if (!fresh && (uint32_t)(now - c.swPhaseMs) < SWEEP_FRAME_WAIT_MS) return;
       sweepRecord(c, sv);
       c.swTarget = sv.fb.position + dir * SWEEP_STEP;
-      if (!servoMoveTo(c.swTarget, SWEEP_SPEED, SWEEP_CURRENT)) { sweepStop(c, false, "servo command failed"); return; }
+      if (!servoMoveTo(c.swTarget, SWEEP_SPEED, c.cfg.closeTorqueLimit)) { sweepStop(c, false, "servo command failed"); return; }
+      c.swStepStart = sv.fb.position; c.swProgPos = sv.fb.position; c.swProgMs = now;
       c.swPhase = SW_MOVE; c.swPhaseMs = now;
       return;
     }
     case SW_MOVE: {
       const int32_t err = sv.fb.position - c.swTarget;
-      const bool arrived = !sv.fb.moving && err <= 15 && err >= -15;
-      const bool stuck = (uint32_t)(now - c.swPhaseMs) >= SWEEP_MOVE_WAIT_MS;
-      if (stuck && !arrived) { sweepStop(c, false, "aborted: jaw stopped without fingertip contact"); return; }
+      bool arrived = !sv.fb.moving && err <= 15 && err >= -15;
+      if (sv.fb.position - c.swProgPos >= 5 || sv.fb.position - c.swProgPos <= -5) { c.swProgPos = sv.fb.position; c.swProgMs = now; }
+      if (!arrived && (uint32_t)(now - c.swProgMs) >= 500) {
+        // No progress for 0.5 s. If the jaw got part of the way, record it where it stopped (the
+        // samples only need increasing positions); if it did not move at all, stop and say why.
+        const int32_t moved = sv.fb.position - c.swStepStart;
+        if (moved >= 30 || moved <= -30) arrived = true;
+        else if ((uint32_t)(now - c.swPhaseMs) >= SWEEP_MOVE_WAIT_MS) {
+          char why[96];
+          snprintf(why, sizeof why, "stopped at %ld, %ld short, %d mA, load %.0f%%, no tip contact",
+                   (long)sv.fb.position, (long)(err < 0 ? -err : err), (int)(sv.fb.current * 6.5f), (double)(sv.fb.load * 100.0f));
+          sweepStop(c, false, why);
+          return;
+        }
+      }
       if (!arrived) return;
       servoStop();
       c.swPhase = SW_FRAMES; c.swPhaseMs = now;
