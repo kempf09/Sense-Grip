@@ -53,3 +53,16 @@ TEST(fsr_mask_zeroes_disabled_channels) {
   CHECK_EQ(a.channelsInContact, (uint8_t)2);
   CHECK_NEAR(a.maxForce, 3, 1e-6);
 }
+
+#include <cmath>
+TEST(fsr_limit_uses_raw_when_filter_hides_spike) {
+  const float raw[6] = {0, 0, 5, 0, 0, 0};
+  const float filt[6] = {0, 0, 0.2f, 0, 0, 0};
+  CHECK_NEAR(limitForceOf(raw, filt, 0x3F), 5.0f, 1e-6);
+}
+TEST(fsr_limit_ignores_disabled_and_nan) {
+  const float raw[6] = {0, 9, NAN, 1, 0, 0};
+  const float filt[6] = {0, 9, NAN, 2, 0, 0};
+  CHECK_NEAR(limitForceOf(raw, filt, 0x3D), 2.0f, 1e-6);   // bit 1 cleared
+  CHECK_NEAR(limitForceOf(raw, filt, 0x00), 0.0f, 1e-6);
+}

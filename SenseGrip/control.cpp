@@ -288,7 +288,7 @@ FsmInputs buildInputs(uint32_t now, Cmd cmd) {
   in.anyFingerContact = any;
   in.avgContactForce = fs.agg.avgContactForce;
   in.channelsInContact = fs.agg.channelsInContact;
-  in.maxForce = fs.agg.maxForce;
+  in.maxForce = fs.limitForce;   // max(raw, filtered): filtering never delays the force limit
   in.fsrSeq = fs.seq;
   in.tofOnline = tf.online; in.objectPresent = tf.objectPresent;
   return in;
@@ -427,7 +427,7 @@ void controlTask(void*) {
     }
 
     if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; if (servoPoll()) checkPositionJump(*c, now); }
-    if ((uint32_t)(now - lastFsr) >= 20) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled); }
+    if ((uint32_t)(now - lastFsr) >= 10) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled, filterParamsOf(c->cfg)); }
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     MotorAction a = c->fsm.step(buildInputs(now, cmd));

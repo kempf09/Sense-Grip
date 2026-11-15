@@ -68,3 +68,13 @@ FsrAggregate aggregate(const float force[6], float thresholdN) {
 void maskForces(const float force[6], uint8_t enabledMask, float out[6]) {
   for (int i = 0; i < 6; i++) out[i] = (enabledMask & (1u << i)) ? force[i] : 0.0f;
 }
+
+float limitForceOf(const float raw[6], const float filtered[6], uint8_t enabledMask) {
+  float m = 0;
+  for (int i = 0; i < 6; i++) {
+    if (!(enabledMask & (1u << i))) continue;
+    if (raw[i] == raw[i] && raw[i] > m) m = raw[i];
+    if (filtered[i] == filtered[i] && filtered[i] > m) m = filtered[i];
+  }
+  return m;
+}

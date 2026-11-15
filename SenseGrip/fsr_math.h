@@ -15,5 +15,9 @@ void updateContacts(ContactDebounce& d, const float force[6], float thresholdN, 
 // (a disabled FSR never counts as contact, grasp force or force-limit input).
 void maskForces(const float force[6], uint8_t enabledMask, float out[6]);
 
+// Force-limit input: max over enabled channels of max(raw, filtered); NaN ignored, 0 if none.
+// Filtering can therefore never delay the force-limit trip.
+float limitForceOf(const float raw[6], const float filtered[6], uint8_t enabledMask);
+
 struct FsrAggregate { float avgContactForce; uint8_t channelsInContact; float maxForce; float fingerForce[3]; };
 FsrAggregate aggregate(const float force[6], float thresholdN);

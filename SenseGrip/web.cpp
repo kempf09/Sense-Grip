@@ -149,7 +149,11 @@ static void handleStatus() {
 
   o.put("},\"fsr\":{\"force\":[");
   for (int i = 0; i < 6; i++) { if (i) o.put(","); o.flt(fs.force[i]); }
-  o.put("],\"raw\":[");
+  o.put("],\"forceRaw\":[");
+  for (int i = 0; i < 6; i++) { if (i) o.put(","); o.flt(fs.forceRaw[i]); }
+  o.put("],\"filterDelayMs\":"); o.flt(filterGroupDelayMs(filterParamsOf(cfg), 10.0f));
+  o.put(",\"limitForce\":"); o.flt(fs.limitForce);
+  o.put(",\"raw\":[");
   for (int i = 0; i < 6; i++) o.put(i ? ",%u" : "%u", (unsigned)fs.raw[i]);
   o.put("],\"mv\":[");
   for (int i = 0; i < 6; i++) { if (i) o.put(","); o.flt(fs.mv[i]); }

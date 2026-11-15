@@ -13,6 +13,9 @@ FsrCal gCal[FSR_COUNT];
 bool gStored[FSR_COUNT];
 FsrSnapshot gSnap = {};
 ContactDebounce gDeb = {};
+ChannelFilter gFilt[FSR_COUNT];       // control-task only
+FilterParams gLastFp = {};
+bool gHaveFp = false;
 
 String key(uint8_t i, const char* suffix) { return "s" + String(i) + suffix; }
 
@@ -58,7 +61,11 @@ void fsrBegin() {
   portEXIT_CRITICAL(&gMux);
 }
 
-void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask) {
+void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask, const FilterParams& fp) {
+  if (!gHaveFp || memcmp(&fp, &gLastFp, sizeof(fp)) != 0) {
+    for (auto& f : gFilt) filterReset(f);
+    gLastFp = fp; gHaveFp = true;
+  }
   FsrCal cal[FSR_COUNT];
   bool stored[FSR_COUNT];
   portENTER_CRITICAL(&gMux);
@@ -75,7 +82,8 @@ void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask) {
     next.mv[i] = mv;
     next.raw[i] = (uint16_t)analogRead(FSR_PINS[i]);
     next.ohms[i] = fsrOhms(mv, cal[i].fixedOhms);
-    next.force[i] = fsrForce(cal[i], next.ohms[i]);
+    next.forceRaw[i] = fsrForce(cal[i], next.ohms[i]);
+    next.force[i] = filterStep(gFilt[i], fp, next.forceRaw[i]);
     next.calibrated[i] = stored[i] && fsrCalValid(cal[i]);
   }
   // Raw readings stay visible for every channel; contact and force aggregates use enabled ones only.
@@ -84,6 +92,7 @@ void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask) {
   updateContacts(gDeb, used, contactN, samples);
   next.contacts = gDeb;
   next.agg = aggregate(used, contactN);
+  next.limitForce = limitForceOf(next.forceRaw, next.force, enabledMask);
 
   portENTER_CRITICAL(&gMux);
   next.seq = gSnap.seq + 1;
