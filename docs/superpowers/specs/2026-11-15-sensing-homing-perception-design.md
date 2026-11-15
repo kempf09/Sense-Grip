@@ -125,8 +125,12 @@ disarmed, no FSR reading contact. Procedure:
    A stall without distal contact (position changes < 10 counts over 300 ms) **fails Home**
    ("stopped without fingertip contact") — a stall-only stop could pick the wrong turn and the
    following Open would over-travel past open.
-   **Unstick:** if the jaw does not move within 300 ms of the first step, retry the step once
-   with maximum current (415 units ≈ 2.7 A) for at most 500 ms, then continue at homing current.
+   **Unstick (only past open):** the mechanism can stick only when it has gone past the open
+   position, so the maximum-current push (415 units ≈ 2.7 A, at most 500 ms, once, when the jaw
+   does not move within 300 ms of the first step) is used only when the jaw is at/past OPEN:
+   homed and at or beyond OPEN zero, or not homed with no fingers visible to the SEN0628 — and
+   never with an FSR in contact. **Never near closed** (operator correction). Home started with a
+   distal FSR already touching resolves without moving.
 2. Torque off. Read raw position `r`.
 3. Choose `k` so that `r + posOffset_k` (with `posOffset_k = k·4096`) is nearest to the saved
    **touch reference** `T` (logical). Residual = `(r + posOffset) − T`.
