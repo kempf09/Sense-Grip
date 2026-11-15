@@ -107,6 +107,7 @@ select{width:auto;min-width:150px;display:block}
    <label class="f" id="flRL">R<input type="number" id="flR" min="0.00001" max="10" step="0.001"></label>
   </div>
   <div class="btns" style="margin-top:8px"><button class="b pri" id="flSave">Apply filter</button><span class="small" id="flDelay"></span></div>
+  <p class="small" id="flLimit"></p>
   <div class="row" style="margin-top:10px"><label class="f">Chart channel<select id="flCh"></select></label>
    <span class="small"><span style="color:#8a96a3">&#9632;</span> raw &nbsp; <span style="color:#4ea1ff">&#9632;</span> filtered &nbsp; force in N, last 10 s</span></div>
   <canvas id="flChart" style="aspect-ratio:auto;height:220px"></canvas>
@@ -260,7 +261,7 @@ function drawTof(){
     var h='<tr><th>Sensor</th><th>Online</th><th>Init</th><th>ok</th><th>err</th><th>last rc</th><th>age ms</th><th>max read ms</th><th>dropouts (moving)</th><th>init fails (last stage)</th></tr>';
     T.sensors.forEach(function(s,k){h+='<tr><td>S'+(k+1)+'</td><td>'+(s.online?'yes':'no')+'</td><td>'+(s.initialized?'yes':'NO')+'</td><td>'+s.ok+'</td><td>'+s.err+'</td><td>'+s.lastRc+'</td><td>'+(s.ageMs===null?'-':s.ageMs)+'</td><td>'+fx(s.readUsMax/1000,1)+'</td><td>'+s.dropouts+' ('+s.dropoutsMoving+')</td><td>'+s.initFails+' ('+(STG[s.initFailStage]||s.initFailStage)+')</td></tr>'});
     var d=S.diag||{};
-    h+='<tr><td colspan="10" class="small">Control loop max '+fx((d.loopMaxUs||0)/1000,1)+' ms (5 s) &middot; servo bus errors '+(d.servoBusErrors||0)+' &middot; position jumps '+(d.posJumps||0)+'</td></tr>';
+    h+='<tr><td colspan="10" class="small">Control loop max '+fx((d.loopMaxUs||0)/1000,1)+' ms (5 s) &middot; FSR pass max '+fx((d.fsrSampleUsMax||0)/1000,1)+' ms &middot; servo bus errors '+(d.servoBusErrors||0)+' &middot; position jumps '+(d.posJumps||0)+'</td></tr>';
     $('tofTbl').innerHTML=h;
   }
 }
@@ -385,7 +386,7 @@ function flShowParams(){var k=+$('flKind').value;
 function flFill(){if(!CFG)return;$('flKind').value=CFG.fsrFilter;$('flWin').value=CFG.fsrFilterWindow;
   $('flAlpha').value=CFG.fsrFilterAlpha;$('flQ').value=CFG.fsrKalmanQ;$('flR').value=CFG.fsrKalmanR;flShowParams();}
 function flPush(){var f=S.fsr;if(!f||!f.forceRaw)return;
-  flHist.push({r:f.forceRaw.slice(),f:f.force.slice()});if(flHist.length>FL_N)flHist.shift();}
+  flHist.push({r:f.forceRaw.slice(),f:f.force.slice(),l:f.limitForce||0});if(flHist.length>FL_N)flHist.shift();}
 function flDraw(){var c=$('flChart');if(!c||!c.clientWidth)return;var dpr=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
   c.width=w*dpr;c.height=h*dpr;var g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
   var ch=+$('flCh').value||0,mx=0.5;flHist.forEach(function(p){[p.r[ch],p.f[ch]].forEach(function(v){if(v!==null&&v>mx)mx=v})});
@@ -394,6 +395,8 @@ function flDraw(){var c=$('flChart');if(!c||!c.clientWidth)return;var dpr=window
   for(var t=0;t<=4;t++){var v=mx*t/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(w-6,y);g.stroke();g.fillText(v.toFixed(v<2?2:1),2,y+4)}
   [['r','#8a96a3',1],['f','#4ea1ff',2]].forEach(function(s){g.strokeStyle=s[1];g.lineWidth=s[2];g.beginPath();var on=false;
     flHist.forEach(function(p,i){var v=p[s[0]][ch];if(v===null){on=false;return}var x=X(i+FL_N-flHist.length),y=Y(v);if(on)g.lineTo(x,y);else{g.moveTo(x,y);on=true}});g.stroke()});
+  var pk=0;flHist.forEach(function(p){if(p.l>pk)pk=p.l});var d=S.diag||{};
+  if(S.fsr)$('flLimit').textContent='Force-limit input (max of raw and filtered, used pads): '+fx(S.fsr.limitForce,2)+' N, peak last 10 s '+fx(pk,2)+' N'+(CFG?' (limit '+fx(CFG.maxForceN,1)+' N)':'')+' \u00b7 FSR sample pass max '+fx((d.fsrSampleUsMax||0)/1000,1)+' ms (5 s)';
   var f=S.fsr;$('flDelay').textContent=f&&f.filterDelayMs!=null?' Delay \u2248 '+fx(f.filterDelayMs,0)+' ms at 100 Hz':'';}
 $('flKind').onchange=flShowParams;
 $('flSave').onclick=function(){if(!CFG){toast('config not loaded');return}

@@ -93,3 +93,16 @@ TEST(filter_group_delay) {
   const double q = 0.01, r = 0.05, pm = (q + std::sqrt(q * q + 4 * q * r)) / 2, k = pm / (pm + r);
   CHECK_NEAR(filterGroupDelayMs(P(FilterKind::KALMAN, 5, 0.3f, 0.01f, 0.05f), 10), (1 - k) / k * 10, 0.5);
 }
+
+#include <cstring>
+TEST(filter_params_equal_ignores_padding) {
+  FilterParams a, b;
+  std::memset(&a, 0x00, sizeof(a)); std::memset(&b, 0xAB, sizeof(b));   // different padding bytes
+  a.kind = b.kind = FilterKind::MEDIAN; a.window = b.window = 5;
+  a.alpha = b.alpha = 0.3f; a.q = b.q = 0.01f; a.r = b.r = 0.05f;
+  CHECK(filterParamsEqual(a, b));
+  b.window = 7;
+  CHECK(!filterParamsEqual(a, b));
+  b.window = 5; b.alpha = 0.31f;
+  CHECK(!filterParamsEqual(a, b));
+}

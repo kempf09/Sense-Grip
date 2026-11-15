@@ -179,8 +179,9 @@ static void handleStatus() {
   o.put("]},\"limits\":{\"openZero\":%ld,\"closeLimit\":%ld,\"valid\":",
         (long)cfg.openZero, (long)cfg.closeLimit);
   o.boolean(cfg.limitsValid);
-  o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu}}",
-        (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors);
+  o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu}}",
+        (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors,
+        (unsigned long)cs.fsrSampleUsMax);
   sendOut(o);
 }
 

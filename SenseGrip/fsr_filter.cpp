@@ -74,3 +74,7 @@ float filterGroupDelayMs(const FilterParams& p, float t) {
     default: return 0;
   }
 }
+
+bool filterParamsEqual(const FilterParams& a, const FilterParams& b) {
+  return a.kind == b.kind && a.window == b.window && a.alpha == b.alpha && a.q == b.q && a.r == b.r;
+}

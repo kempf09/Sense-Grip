@@ -16,6 +16,7 @@ struct ControlStatus {
   char lastActionMsg[96]; bool lastActionOk;
   uint32_t loopMaxUs;     // longest control-loop iteration in the last 5 s (diagnostics)
   uint32_t posJumps;      // servo position jumps detected since boot
+  uint32_t fsrSampleUsMax; // longest FSR sample pass in the last 5 s (spec: reduce oversampling if > 4 ms)
 };
 
 void controlBegin();                              // creates the request queue (8); call before tasks

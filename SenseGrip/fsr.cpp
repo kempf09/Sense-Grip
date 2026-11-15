@@ -62,7 +62,7 @@ void fsrBegin() {
 }
 
 void fsrSample(float contactN, uint8_t samples, uint8_t enabledMask, const FilterParams& fp) {
-  if (!gHaveFp || memcmp(&fp, &gLastFp, sizeof(fp)) != 0) {
+  if (!gHaveFp || !filterParamsEqual(fp, gLastFp)) {
     for (auto& f : gFilt) filterReset(f);
     gLastFp = fp; gHaveFp = true;
   }

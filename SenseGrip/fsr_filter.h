@@ -8,6 +8,8 @@ constexpr uint8_t FILTER_MAX_WINDOW = 20;
 struct ChannelFilter { float buf[FILTER_MAX_WINDOW]; uint8_t count, head; float y, p; bool init; };
 
 void  filterReset(ChannelFilter& f);
+// Field-by-field comparison (never memcmp: the struct has padding bytes).
+bool  filterParamsEqual(const FilterParams& a, const FilterParams& b);
 // One sample in, one filtered sample out. NaN in -> NaN out, state untouched.
 float filterStep(ChannelFilter& f, const FilterParams& p, float x);
 // Approximate group delay: MA/median (N-1)/2*T, EMA (1-a)/a*T, Kalman via steady-state gain.

@@ -55,6 +55,7 @@ struct Ctl {
   bool bootStopPending = false;   // servo not yet confirmed stopped after reset
   uint32_t loopMaxUs = 0, loopMaxWin = 0, loopWinStart = 0;
   uint32_t posJumps = 0;
+  uint32_t fsrUsMax = 0, fsrUsMaxWin = 0;
   bool havePos = false; int32_t lastPos = 0; uint32_t lastPosMs = 0;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
@@ -342,7 +343,7 @@ void publish(Ctl& c) {
   s.nBlockers = c.fsm.blockers(s.blockers, Fsm::MAX_REPORTED);
   snprintf(s.lastActionMsg, sizeof(s.lastActionMsg), "%s", c.msg);
   s.lastActionOk = c.msgOk;
-  s.loopMaxUs = c.loopMaxUs; s.posJumps = c.posJumps;
+  s.loopMaxUs = c.loopMaxUs; s.posJumps = c.posJumps; s.fsrSampleUsMax = c.fsrUsMax;
   portENTER_CRITICAL(&gMux);
   memcpy(&gStatus, &s, sizeof(s));
   portEXIT_CRITICAL(&gMux);
@@ -427,7 +428,13 @@ void controlTask(void*) {
     }
 
     if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; if (servoPoll()) checkPositionJump(*c, now); }
-    if ((uint32_t)(now - lastFsr) >= 10) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled, filterParamsOf(c->cfg)); }
+    if ((uint32_t)(now - lastFsr) >= 10) {
+      lastFsr = now;
+      const uint32_t t0 = micros();
+      fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled, filterParamsOf(c->cfg));
+      const uint32_t dt = micros() - t0;
+      if (dt > c->fsrUsMaxWin) c->fsrUsMaxWin = dt;
+    }
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     MotorAction a = c->fsm.step(buildInputs(now, cmd));
@@ -439,7 +446,11 @@ void controlTask(void*) {
     {   // loop timing diagnostics: max iteration time over 5 s windows
       const uint32_t dt = micros() - loopStartUs;
       if (dt > c->loopMaxWin) c->loopMaxWin = dt;
-      if ((uint32_t)(now - c->loopWinStart) >= 5000) { c->loopMaxUs = c->loopMaxWin; c->loopMaxWin = 0; c->loopWinStart = now; }
+      if ((uint32_t)(now - c->loopWinStart) >= 5000) {
+        c->loopMaxUs = c->loopMaxWin; c->loopMaxWin = 0;
+        c->fsrUsMax = c->fsrUsMaxWin; c->fsrUsMaxWin = 0;
+        c->loopWinStart = now;
+      }
     }
     publish(*c);
     vTaskDelay(1);

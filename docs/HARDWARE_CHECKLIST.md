@@ -40,5 +40,6 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 16. **FSR filters.** FSR tab, pick a pad in the chart. Press it by hand and tap it sharply: compare
     raw (grey) and filtered (blue) for each filter, and note the delay readout. With the median
     filter on, a sharp press above the force limit must still trip the FAULT.
-17. **Loop time at 100 Hz.** SEN0628 tab: the control loop max should stay below 10 ms; if not,
-    report it (the FSR oversampling can be reduced from 16 to 8).
+17. **FSR sample time at 100 Hz.** FSR tab (Filter panel) or SEN0628 tab: "FSR sample pass max"
+    must stay at or below 4 ms, and the control loop max below 10 ms. If the pass is above 4 ms,
+    report it: the FSR oversampling is then reduced from 16 to 8.
