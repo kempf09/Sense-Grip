@@ -50,8 +50,9 @@ canvas{width:100%;aspect-ratio:1;background:#0c1117;border:1px solid var(--bd);b
 .hm{text-align:center}.hm .small{margin-top:4px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 td,th{padding:4px 6px;border-bottom:1px solid var(--bd);text-align:left}
-input[type=number],input[type=text]{background:#0c1117;color:var(--tx);border:1px solid var(--bd);border-radius:5px;padding:6px;width:100%;font-size:14px}
+input[type=number],input[type=text],select{background:#0c1117;color:var(--tx);border:1px solid var(--bd);border-radius:5px;padding:6px;width:100%;font-size:14px}
 label.f{display:block;font-size:13px;color:var(--mu)}
+select{width:auto;min-width:150px;display:block}
 .cfg{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:8px 0}
 .jog{user-select:none;-webkit-user-select:none;touch-action:none}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
@@ -97,6 +98,19 @@ label.f{display:block;font-size:13px;color:var(--mu)}
 
 <section class="tab" id="t-fsr">
  <div class="panel"><h2>Channels</h2><div style="overflow-x:auto"><table id="fsrTbl"></table></div></div>
+ <div class="panel"><h2>Filter</h2>
+  <div class="row">
+   <label class="f">Filter<select id="flKind"><option value="0">None (raw)</option><option value="1">Moving average</option><option value="2">Median</option><option value="3">Exponential (EMA)</option><option value="4">Kalman (1-D)</option></select></label>
+   <label class="f" id="flWinL">Window N<input type="number" id="flWin" min="2" max="20"></label>
+   <label class="f" id="flAlphaL">&alpha; (0.05-1)<input type="number" id="flAlpha" min="0.05" max="1" step="0.05"></label>
+   <label class="f" id="flQL">Q<input type="number" id="flQ" min="0.00001" max="10" step="0.001"></label>
+   <label class="f" id="flRL">R<input type="number" id="flR" min="0.00001" max="10" step="0.001"></label>
+  </div>
+  <div class="btns" style="margin-top:8px"><button class="b pri" id="flSave">Apply filter</button><span class="small" id="flDelay"></span></div>
+  <div class="row" style="margin-top:10px"><label class="f">Chart channel<select id="flCh"></select></label>
+   <span class="small"><span style="color:#8a96a3">&#9632;</span> raw &nbsp; <span style="color:#4ea1ff">&#9632;</span> filtered &nbsp; force in N, last 10 s</span></div>
+  <canvas id="flChart" style="aspect-ratio:auto;height:220px"></canvas>
+ </div>
  <div class="panel"><h2>Calibration (per channel)</h2><div id="calBox"></div>
   <p class="small">r = fixed resistor (ohm); f1/o1, f2/o2 = two force (N) / resistance (ohm) points; z = zero mV. Only in IDLE or FAULT.</p></div>
  <div class="panel"><h2>Config</h2><div class="cfg" id="fsrCfg"></div><button class="b pri" id="fsrSave">Save</button></div>
@@ -182,6 +196,7 @@ function mkFingers(){
 }
 function render(){
   if(!S)return;
+  flPush();
   var st=S.state||'?';
   var b=$('badge');b.textContent=st;b.className='st-'+st;
   var h=$('hdrState');h.textContent=st;h.className='pill st-'+st;
@@ -274,6 +289,7 @@ function fillForms(){
   for(var k=0;k<3;k++){maskLoaded[k]=BigInt('0x'+CFG['tofMask'+k]);maskEdit[k]=maskLoaded[k]}
   $('maskSave').disabled=false;$('maskSave').title='';
   document.querySelectorAll('.fsrUse').forEach(function(c){c.checked=!!(CFG.fsrEnabled&(1<<+c.dataset.u))});
+  flFill();
   var L=$('limTxt');if(L)L.textContent=CFG.limitsValid?(CFG.openZero+' .. '+CFG.closeLimit):'not set';
 }
 function loadCfg(){return getJ('/api/config').then(function(j){CFG=j;fillForms();drawTof()}).catch(function(){})}
@@ -361,7 +377,35 @@ function mkFsr(){
   };
   $('fsrTbl').onclick=function(e){var z=e.target.dataset&&e.target.dataset.z;if(z!==undefined&&z!=='')post('/api/fsr/zero',{id:z}).then(function(j){if(j){toast('Zeroed');loadCal()}})};
 }
+/* ---------- FSR filter chart (ring buffer of the last 10 s of status polls) ---------- */
+var FL_N=50,flHist=[];   /* 50 polls x 200 ms = 10 s */
+function flShowParams(){var k=+$('flKind').value;
+  $('flWinL').style.display=(k===1||k===2)?'':'none';$('flAlphaL').style.display=k===3?'':'none';
+  $('flQL').style.display=k===4?'':'none';$('flRL').style.display=k===4?'':'none';}
+function flFill(){if(!CFG)return;$('flKind').value=CFG.fsrFilter;$('flWin').value=CFG.fsrFilterWindow;
+  $('flAlpha').value=CFG.fsrFilterAlpha;$('flQ').value=CFG.fsrKalmanQ;$('flR').value=CFG.fsrKalmanR;flShowParams();}
+function flPush(){var f=S.fsr;if(!f||!f.forceRaw)return;
+  flHist.push({r:f.forceRaw.slice(),f:f.force.slice()});if(flHist.length>FL_N)flHist.shift();}
+function flDraw(){var c=$('flChart');if(!c||!c.clientWidth)return;var dpr=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
+  c.width=w*dpr;c.height=h*dpr;var g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
+  var ch=+$('flCh').value||0,mx=0.5;flHist.forEach(function(p){[p.r[ch],p.f[ch]].forEach(function(v){if(v!==null&&v>mx)mx=v})});
+  mx*=1.15;var L=36,B=18,X=function(i){return L+(w-L-6)*i/(FL_N-1)},Y=function(v){return h-B-(h-B-6)*v/mx};
+  g.strokeStyle='#26313d';g.fillStyle='#8a96a3';g.font='11px system-ui';g.lineWidth=1;
+  for(var t=0;t<=4;t++){var v=mx*t/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(w-6,y);g.stroke();g.fillText(v.toFixed(v<2?2:1),2,y+4)}
+  [['r','#8a96a3',1],['f','#4ea1ff',2]].forEach(function(s){g.strokeStyle=s[1];g.lineWidth=s[2];g.beginPath();var on=false;
+    flHist.forEach(function(p,i){var v=p[s[0]][ch];if(v===null){on=false;return}var x=X(i+FL_N-flHist.length),y=Y(v);if(on)g.lineTo(x,y);else{g.moveTo(x,y);on=true}});g.stroke()});
+  var f=S.fsr;$('flDelay').textContent=f&&f.filterDelayMs!=null?' Delay \u2248 '+fx(f.filterDelayMs,0)+' ms at 100 Hz':'';}
+$('flKind').onchange=flShowParams;
+$('flSave').onclick=function(){if(!CFG){toast('config not loaded');return}
+  var k=+$('flKind').value,o={fsrFilter:k};
+  if(k===1||k===2)o.fsrFilterWindow=$('flWin').value;if(k===3)o.fsrFilterAlpha=$('flAlpha').value;
+  if(k===4){o.fsrKalmanQ=$('flQ').value;o.fsrKalmanR=$('flR').value}
+  post('/api/config',o).then(function(j){if(j){toast('Filter applied (queued)');flHist=[];setTimeout(loadCfg,500)}});};
+(function(){var h='';for(var i=0;i<6;i++)h+='<option value="'+i+'">FSR '+FSR_PRINT[i]+' ('+fingerOf(i)+')</option>';$('flCh').innerHTML=h;})();
+$('flCh').onchange=flDraw;
+
 function renderFsr(){
+  flDraw();
   var f=S.fsr;if(!f)return;
   for(var i=0;i<6;i++){
     $('fr'+i).textContent=f.raw[i];$('fm'+i).textContent=fx(f.mv[i],0);
