@@ -22,9 +22,7 @@ bool     everGood = false;
 SvPhaseLatch phaseLatch = {false, 0};   // UART-task-only
 
 // UART-task-only.
-bool runViaPosition = false;
 int32_t closeLimitPos = 0, openZeroPos = 0;
-bool closePositiveDir = true;
 
 void setError(const char* text) {
   portENTER_CRITICAL(&mux);
@@ -91,6 +89,7 @@ bool transact(uint8_t instr, const uint8_t* params, uint8_t n, uint8_t& status,
     }
     if (have >= RX_CAP) have = 0;  // overflow guard: drop and keep listening
   }
+  portENTER_CRITICAL(&mux); snap.busErrors++; portEXIT_CRITICAL(&mux);
   setError(sawBadSum ? "reply checksum error" : sawWrongId ? "reply from wrong ID" : "reply timeout");
   return false;
 }
@@ -137,18 +136,16 @@ void cleanupStop() {
   setError(e);
 }
 
-bool ensureMode(uint8_t want) {
+// Every motion uses position mode 0 and the firmware never switches mode on its own:
+// on this servo a write to reg 33 resets the position count (observed: Open changed the
+// mode to 0 and the position jumped to ~0, breaking the saved limits). The mode is only
+// read here; "Set position mode" (servoSetPositionMode) is an explicit operator action.
+bool requireMode0() {
   bool known; uint8_t cur;
   portENTER_CRITICAL(&mux); known = snap.modeKnown; cur = snap.mode; portEXIT_CRITICAL(&mux);
-  if (known && cur == want) return true;
-  torqueOff();  // best effort: never switch mode with torque on (stale goal would jump)
-  if (!writeRegs(33, &want, 1)) {
-    // The write may have taken effect even though the reply failed.
-    portENTER_CRITICAL(&mux); snap.modeKnown = false; snap.mode = 255; portEXIT_CRITICAL(&mux);
-    return false;
-  }
-  portENTER_CRITICAL(&mux); snap.mode = want; snap.modeKnown = true; portEXIT_CRITICAL(&mux);
-  return true;
+  if (known && cur == 0) return true;
+  setError(known ? "servo not in position mode 0" : "servo mode not read yet");
+  return false;
 }
 
 uint16_t clampU16(int32_t v, int32_t lo, int32_t hi) { return (uint16_t)(v < lo ? lo : v > hi ? hi : v); }
@@ -211,38 +208,31 @@ bool servoReadModeAndPhase() {
 
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit) {
   if (speed < 1) speed = 1;
-  if (ensureMode(0) && writeGoalBlock(position, speed, torqueLimit)) {
-    clearError();
-    return true;
-  }
+  if (!requireMode0()) return false;          // nothing was written: nothing to undo
+  if (writeGoalBlock(position, speed, torqueLimit)) { clearError(); return true; }
   cleanupStop();  // best effort; lastError keeps the original failure
   return false;
 }
 
-bool servoHoldHere(uint16_t torqueLimit, uint16_t speed) {
-  bool online, fresh; int32_t pos;
-  portENTER_CRITICAL(&mux);
-  online = snap.online; pos = snap.fb.position;
-  fresh = everGood && (uint32_t)(millis() - lastGoodMs) <= 100;
-  portEXIT_CRITICAL(&mux);
-  if (!online) { setError("hold: servo offline"); return false; }
-  if (!fresh) { setError("stale feedback"); return false; }
-  return servoMoveTo(pos, speed, torqueLimit);
+// The gripper cannot be back-driven, so "hold" is torque off: the jaw stays where it is.
+bool servoHoldHere(uint16_t, uint16_t) { return servoStop(); }
+
+// Approach / grasp in position mode: drive toward the close limit (or OPEN zero) at the
+// given speed; the FSM stops it with servoStop() on contact / force / limit. Torque goes
+// off first so a slower goal (contact -> grasp) does not ride the previous speed's ramp.
+bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit) {
+  if (speedClosingPositive == 0) return servoStop();
+  if (!requireMode0()) return false;
+  stopWrites();                               // best effort
+  const int32_t mag = speedClosingPositive < 0 ? -(int32_t)speedClosingPositive : speedClosingPositive;
+  return servoMoveTo(speedClosingPositive > 0 ? closeLimitPos : openZeroPos, (uint16_t)mag, torqueLimit);
 }
 
-bool servoRunAt(int16_t speedClosingPositive, uint16_t torqueLimit) {
-  if (speedClosingPositive == 0) return servoHoldHere(torqueLimit, 1);
-  if (runViaPosition) {
-    const int32_t mag = speedClosingPositive < 0 ? -(int32_t)speedClosingPositive : speedClosingPositive;
-    return servoMoveTo(speedClosingPositive > 0 ? closeLimitPos : openZeroPos,
-                       (uint16_t)mag, torqueLimit);
-  }
-  if (!ensureMode(1)) return false;
-  const int32_t signedSpeed = closePositiveDir ? speedClosingPositive : -(int32_t)speedClosingPositive;
-  // Wheel mode: same block as the library's WriteSpe (position field 0).
-  if (writeGoalBlock(0, signedSpeed, torqueLimit)) { clearError(); return true; }
-  cleanupStop();
-  return false;
+// Jog step in position mode: goal = present position +/- a chunk that outlasts the
+// 300 ms jog dead-man at this speed (re-issued on every repeat), like Release 3.0.3.
+// target is clamped by the caller when limits apply.
+bool servoJogTo(int32_t target, uint16_t speed, uint16_t torqueLimit) {
+  return servoMoveTo(target, speed, torqueLimit);
 }
 
 bool servoStop() {
@@ -252,6 +242,21 @@ bool servoStop() {
 }
 
 bool servoBootStop() { return servoStop(); }
+
+// Operator action: torque off, unlock EEPROM, mode 0, lock (as the library's
+// ProgramEprom example brackets EEPROM writes). The position count may reset.
+bool servoSetPositionMode() {
+  if (!stopWrites()) return false;
+  const uint8_t unlock = 0, lock = 1, mode0 = 0;
+  if (!writeRegs(55, &unlock, 1)) return false;
+  const bool ok = writeRegs(33, &mode0, 1);
+  writeRegs(55, &lock, 1);            // best effort
+  portENTER_CRITICAL(&mux);
+  if (ok) { snap.mode = 0; snap.modeKnown = true; } else { snap.modeKnown = false; snap.mode = 255; }
+  portEXIT_CRITICAL(&mux);
+  if (ok) clearError();
+  return ok;
+}
 
 // Waveshare CalibrationOfs(): torque off, unlock EEPROM (reg 55 = 0), calibrate
 // instruction 0x0B (current position becomes the servo's middle). The EEPROM is locked
@@ -289,6 +294,7 @@ ServoSnapshot servoGet() {
   return s;
 }
 
-void servoSetRunViaPosition(bool v, int32_t closeLimit, int32_t openZero, bool closePositive) {
-  runViaPosition = v; closeLimitPos = closeLimit; openZeroPos = openZero; closePositiveDir = closePositive;
+void servoSetLimits(int32_t closeLimit, int32_t openZero, bool closePositive) {
+  (void)closePositive;   // targets are absolute positions
+  closeLimitPos = closeLimit; openZeroPos = openZero;
 }

@@ -88,7 +88,7 @@ label.f{display:block;font-size:13px;color:var(--mu)}
    <div class="row"><label class="f">Jog speed (1-61, x0.732 RPM)<input type="number" id="jogSpd" min="1" max="61" value="20"></label><label class="f"><span>Ignore limits while jogging</span><input type="checkbox" id="jogIgn"></label></div>
    <div class="btns"><button class="b jog" id="jogC">Jog Close (hold)</button><button class="b jog" id="jogO">Jog Open (hold)</button></div>
    <div class="btns" style="margin-top:8px"><button class="b" id="setOpen">Set OPEN zero here</button><button class="b" id="setClose">Set close limit here</button></div>
-   <div class="btns" style="margin-top:8px"><button class="b" id="clearLim">Clear limits</button><button class="b" id="calMid">Calibrate servo middle here</button><button class="b" id="scan">Scan</button></div>
+   <div class="btns" style="margin-top:8px"><button class="b" id="clearLim">Clear limits</button><button class="b" id="posMode">Set position mode (0)</button><button class="b" id="calMid">Calibrate servo middle here</button><button class="b" id="scan">Scan</button></div>
    <p class="small">Jog is only accepted while IDLE and disarmed. After jogging or setting limits, press Open again before arming. Limits: <span id="limTxt">-</span></p>
    <button class="estop" id="estop2">E-STOP</button></div>
  </div>
@@ -241,15 +241,18 @@ function drawTof(){
     }
   }
   if(tab==='tof'&&T&&T.sensors){
-    var h='<tr><th>Sensor</th><th>Online</th><th>ok</th><th>err</th><th>age ms</th></tr>';
-    T.sensors.forEach(function(s,k){h+='<tr><td>S'+(k+1)+'</td><td>'+(s.online?'yes':'no')+'</td><td>'+s.ok+'</td><td>'+s.err+'</td><td>'+(s.ageMs===null?'-':s.ageMs)+'</td></tr>'});
+    var STG=['-','no I2C ACK','begin()','setRangingMode()'];
+    var h='<tr><th>Sensor</th><th>Online</th><th>Init</th><th>ok</th><th>err</th><th>last rc</th><th>age ms</th><th>max read ms</th><th>dropouts (moving)</th><th>init fails (last stage)</th></tr>';
+    T.sensors.forEach(function(s,k){h+='<tr><td>S'+(k+1)+'</td><td>'+(s.online?'yes':'no')+'</td><td>'+(s.initialized?'yes':'NO')+'</td><td>'+s.ok+'</td><td>'+s.err+'</td><td>'+s.lastRc+'</td><td>'+(s.ageMs===null?'-':s.ageMs)+'</td><td>'+fx(s.readUsMax/1000,1)+'</td><td>'+s.dropouts+' ('+s.dropoutsMoving+')</td><td>'+s.initFails+' ('+(STG[s.initFailStage]||s.initFailStage)+')</td></tr>'});
+    var d=S.diag||{};
+    h+='<tr><td colspan="10" class="small">Control loop max '+fx((d.loopMaxUs||0)/1000,1)+' ms (5 s) &middot; servo bus errors '+(d.servoBusErrors||0)+' &middot; position jumps '+(d.posJumps||0)+'</td></tr>';
     $('tofTbl').innerHTML=h;
   }
 }
 
 /* ---------- config forms ---------- */
 var FORMS={
- svCfg:[['approachSpeed','Approach speed (1-61, x0.732 RPM)'],['graspSpeed','Grasp speed (1-61, x0.732 RPM)'],['openSpeed','Open speed (1-61, x0.732 RPM)'],['closeTorqueLimit','Close max current (x6.5 mA)'],['openTorqueLimit','Open max current (x6.5 mA)'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['runViaPosition','Run via position','b'],['closePositive','Close = positive','b']],
+ svCfg:[['approachSpeed','Approach speed (1-61, x0.732 RPM)'],['graspSpeed','Grasp speed (1-61, x0.732 RPM)'],['openSpeed','Open speed (1-61, x0.732 RPM)'],['closeTorqueLimit','Close max current (x6.5 mA)'],['openTorqueLimit','Open max current (x6.5 mA)'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['closePositive','Close = positive','b']],
  fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspForceN','Grasp force N'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
  tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']]
 };
@@ -336,6 +339,7 @@ document.addEventListener('visibilitychange',function(){if(document.hidden)jogSt
 $('setOpen').onclick=function(){post('/api/servo/setOpen')};
 $('setClose').onclick=function(){post('/api/servo/setClose')};
 $('scan').onclick=function(){post('/api/servo/scan')};
+$('posMode').onclick=function(){if(confirm('Put the servo in position mode 0 (saved in the servo)? Torque goes off, the position count may reset and the limits are cleared.'))post('/api/servo/positionMode')};
 $('calMid').onclick=function(){if(confirm('Make the present position the servo middle (Waveshare calibration)? Torque goes off, all positions shift and the limits are cleared.'))post('/api/servo/calibrateMiddle')};
 $('clearLim').onclick=function(){if(confirm('Clear OPEN zero and close limit? You will need to set both again.'))post('/api/servo/clearLimits')};
 /* Ignore-limits is one-shot: it switches itself off after each jog release. */

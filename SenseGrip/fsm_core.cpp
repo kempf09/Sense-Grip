@@ -191,6 +191,7 @@ MotorAction Fsm::onOpen(const FsmInputs& in) {
     setReason("Open refused: servo status: %s", bits);
     return NO_ACTION;
   }
+  if (!in.servoModeKnown || in.servoMode != 0) { setReason("Open refused: servo not in position mode 0"); return NO_ACTION; }
   if (!in.servoFullAngle) { setReason("Open refused: servo multi-turn (full-angle) feedback off"); return NO_ACTION; }
   if (const char* p = limitsProblem(cfg_)) { setReason("Open refused: %s", p); return NO_ACTION; }
   return enter(State::OPEN, "Open requested");
@@ -260,6 +261,8 @@ void Fsm::computeBlockers(const FsmInputs& in) {
     svStatusText(in.servoStatus, bits, sizeof bits);
     addBlocker(BLK_SERVO_STATUS, "servo status: %s", bits);
   }
+  if (in.servoModeKnown && in.servoMode != 0)
+    addBlocker(BLK_SERVO_MODE, "servo in mode %u, not position mode 0 — Servo tab: Set position mode", (unsigned)in.servoMode);
   if (!in.servoFullAngle) addBlocker(BLK_FULL_ANGLE, "servo multi-turn (full-angle) feedback off");
   if (const char* p = limitsProblem(cfg_)) addBlocker(BLK_LIMITS, "%s", p);
   if (!openedSinceBoot_) addBlocker(BLK_NOT_OPENED, "not at OPEN — press Open (after power-up, jog, new limits)");

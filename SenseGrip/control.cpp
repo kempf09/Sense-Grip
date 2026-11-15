@@ -53,6 +53,9 @@ struct Ctl {
   char msg[96] = "";
   bool msgOk = true;
   bool bootStopPending = false;   // servo not yet confirmed stopped after reset
+  uint32_t loopMaxUs = 0, loopMaxWin = 0, loopWinStart = 0;
+  uint32_t posJumps = 0;
+  bool havePos = false; int32_t lastPos = 0; uint32_t lastPosMs = 0;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -70,7 +73,7 @@ void applyConfig(Ctl& c) {
   gCfgPub = c.cfg;
   portEXIT_CRITICAL(&gMux);
   c.fsm.setConfig(c.cfg);
-  servoSetRunViaPosition(c.cfg.runViaPosition, c.cfg.closeLimit, c.cfg.openZero, c.cfg.closePositive);
+  servoSetLimits(c.cfg.closeLimit, c.cfg.openZero, c.cfg.closePositive);
   tofSetDetect(c.cfg.detectMm, c.cfg.detectHoldMs, c.cfg.tofMask);
 }
 
@@ -115,7 +118,8 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
                    : r.kind == ControlRequest::SET_CLOSE ? "set close"
                    : r.kind == ControlRequest::SCAN ? "scan"
                    : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits"
-                   : r.kind == ControlRequest::CALIBRATE_MIDDLE ? "calibrate middle" : "config";
+                   : r.kind == ControlRequest::CALIBRATE_MIDDLE ? "calibrate middle"
+                   : r.kind == ControlRequest::SET_POSITION_MODE ? "set position mode" : "config";
   State st = c.fsm.state();
   if (st != State::IDLE && st != State::FAULT) {
     say(c, false, "%s only allowed in IDLE or FAULT (now %s)", what, stateName(st));
@@ -126,10 +130,6 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
   switch (r.kind) {
     case ControlRequest::JOG: {
       if (c.fsm.armed()) { say(c, false, "disarm before jogging"); return; }
-      if (c.cfg.runViaPosition && (!c.cfg.limitsValid || r.ignoreLimits)) {
-        say(c, false, "run-via-position jog needs valid limits and can't ignore them; untick runViaPosition to jog freely");
-        return;
-      }
       if (!sv.online) { say(c, false, "jog refused: servo offline"); return; }
       int16_t sp = r.speed;
       if (sp > (int16_t)SPEED_MAX) sp = SPEED_MAX;
@@ -141,8 +141,19 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
         return;
       }
       uint16_t tq = sp > 0 ? c.cfg.closeTorqueLimit : c.cfg.openTorqueLimit;
+      // Position-mode jog step: a goal ahead of the present position that outlasts the
+      // dead-man at this speed (speed unit 0.732 RPM ~ 50 counts/s), re-issued on repeat.
+      const int32_t mag = sp < 0 ? -(int32_t)sp : sp;
+      const int32_t dir = ((sp > 0) == c.cfg.closePositive) ? 1 : -1;
+      int32_t target = sv.fb.position + dir * mag * 30;      // ~0.6 s of travel
+      if (c.cfg.limitsValid && !r.ignoreLimits) {
+        const int32_t lim = sp > 0 ? c.cfg.closeLimit : c.cfg.openZero;
+        if ((dir > 0 && target > lim) || (dir < 0 && target < lim)) target = lim;
+      }
+      if (target > 32767) target = 32767;
+      if (target < -32767) target = -32767;
       c.fsm.invalidateOpened();            // the jaw may leave OPEN (even if the command fails)
-      if (!servoRunAt(sp, tq)) {
+      if (!servoJogTo(target, (uint16_t)mag, tq)) {
         c.jogActive = true;   // so jogStop() sends and retries the stop
         jogStop(c);
         say(c, false, "jog failed: %s", servoGet().lastError);
@@ -185,6 +196,21 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       say(c, true, "limits cleared: jog freely, then set OPEN zero and close limit again");
       return;
     }
+    case ControlRequest::SET_POSITION_MODE: {
+      jogStop(c);
+      if (c.fsm.armed()) { say(c, false, "disarm first"); return; }
+      if (!sv.online) { say(c, false, "set position mode refused: servo offline"); return; }
+      if (!servoSetPositionMode()) { say(c, false, "set position mode failed: %s", servoGet().lastError); return; }
+      // A mode write can reset the position count: the saved limits no longer apply.
+      GripConfig n = c.cfg;
+      n.limitsValid = false;
+      configSave(n);
+      c.cfg = n;
+      applyConfig(c);
+      c.fsm.invalidateOpened();
+      say(c, true, "servo in position mode 0 (saved); limits cleared - jog, set OPEN zero and close limit again");
+      return;
+    }
     case ControlRequest::CALIBRATE_MIDDLE: {
       jogStop(c);
       if (c.fsm.armed()) { say(c, false, "disarm before calibrating"); return; }
@@ -224,8 +250,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
         if (prob) { say(c, false, "config refused: %s", prob); return; }
       }
       if (!configSave(n)) { say(c, false, "config failed: could not save"); return; }
-      const bool motionChanged = n.closePositive != c.cfg.closePositive ||
-                                 n.runViaPosition != c.cfg.runViaPosition;
+      const bool motionChanged = n.closePositive != c.cfg.closePositive;
       c.cfg = n;
       applyConfig(c);
       if (motionChanged) c.fsm.invalidateOpened();   // press Open again with the new direction/mode
@@ -246,7 +271,7 @@ FsmInputs buildInputs(uint32_t now, Cmd cmd) {
   // Fault bits come from the status register and from the status byte of each reply.
   in.servoOnline = sv.online; in.servoAgeMs = sv.ageMs;
   in.servoStatus = (uint8_t)(sv.fb.status | sv.replyStatus);
-  in.servoFullAngle = sv.fullAngle; in.servoModeKnown = sv.modeKnown;
+  in.servoFullAngle = sv.fullAngle; in.servoModeKnown = sv.modeKnown; in.servoMode = sv.mode;
   in.position = sv.fb.position;
   bool any = false;
   // A channel the operator disabled is ignored by the FSM: not required to be calibrated,
@@ -277,6 +302,30 @@ bool applyAction(const MotorAction& a) {
   }
 }
 
+// Cause-independent guard: the jaw cannot move faster than ~3100 counts/s (speed 61), so a
+// position change of more than 400 counts within 50 ms means the servo's position count
+// was reset (e.g. by a mode change). The saved limits and "opened" no longer apply.
+void checkPositionJump(Ctl& c, uint32_t now) {
+  ServoSnapshot sv = servoGet();
+  if (!sv.online || sv.ageMs > SERVO_FRESH_MS) { c.havePos = false; return; }
+  const int32_t pos = sv.fb.position;
+  if (c.havePos && (uint32_t)(now - c.lastPosMs) <= 50) {
+    const int32_t d = pos - c.lastPos;
+    if (d > 400 || d < -400) {
+      c.posJumps++;
+      State st = c.fsm.state();
+      if (st != State::IDLE && st != State::FAULT) c.fsm.motorFailed("servo position jumped (count reset?)");
+      jogStop(c);
+      if (c.cfg.limitsValid) {
+        GripConfig n = c.cfg; n.limitsValid = false; configSave(n); c.cfg = n; applyConfig(c);
+      }
+      c.fsm.invalidateOpened();
+      say(c, false, "servo position jumped %ld -> %ld: limits cleared, set them again", (long)c.lastPos, (long)pos);
+    }
+  }
+  c.havePos = true; c.lastPos = pos; c.lastPosMs = now;
+}
+
 void publish(Ctl& c) {
   ControlStatus s;
   memset(&s, 0, sizeof(s));
@@ -287,6 +336,7 @@ void publish(Ctl& c) {
   s.nBlockers = c.fsm.blockers(s.blockers, Fsm::MAX_REPORTED);
   snprintf(s.lastActionMsg, sizeof(s.lastActionMsg), "%s", c.msg);
   s.lastActionOk = c.msgOk;
+  s.loopMaxUs = c.loopMaxUs; s.posJumps = c.posJumps;
   portENTER_CRITICAL(&gMux);
   memcpy(&gStatus, &s, sizeof(s));
   portEXIT_CRITICAL(&gMux);
@@ -332,6 +382,7 @@ void controlTask(void*) {
   uint32_t lastServo = 0, lastFsr = 0, lastMode = 0;
   bool modeRead = false;
   for (;;) {
+    const uint32_t loopStartUs = micros();
     uint32_t now = millis();
     Cmd cmd = Cmd::NONE;
 
@@ -369,7 +420,7 @@ void controlTask(void*) {
       say(*c, true, "jog stopped (no repeat within %u ms)", (unsigned)JOG_DEADMAN_MS);
     }
 
-    if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; servoPoll(); }
+    if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; if (servoPoll()) checkPositionJump(*c, now); }
     if ((uint32_t)(now - lastFsr) >= 20) { lastFsr = now; fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled); }
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
@@ -379,6 +430,11 @@ void controlTask(void*) {
       servoStop();
     }
 
+    {   // loop timing diagnostics: max iteration time over 5 s windows
+      const uint32_t dt = micros() - loopStartUs;
+      if (dt > c->loopMaxWin) c->loopMaxWin = dt;
+      if ((uint32_t)(now - c->loopWinStart) >= 5000) { c->loopMaxUs = c->loopMaxWin; c->loopMaxWin = 0; c->loopWinStart = now; }
+    }
     publish(*c);
     vTaskDelay(1);
   }

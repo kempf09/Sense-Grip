@@ -13,7 +13,7 @@ static FsmInputs ready(uint32_t now = 0) {
   FsmInputs in{};
   in.nowMs = now; in.cmd = Cmd::NONE;
   in.servoOnline = true; in.servoAgeMs = 5; in.servoStatus = 0;
-  in.servoFullAngle = true; in.servoModeKnown = true; in.position = 1968;
+  in.servoFullAngle = true; in.servoModeKnown = true; in.servoMode = 0; in.position = 1968;
   for (int i = 0; i < 6; i++) { in.fsrCalibrated[i] = true; in.fsrForce[i] = 0; }
   in.tofOnline = 3; in.objectPresent = false;
   return in;
@@ -604,4 +604,21 @@ TEST(fsm_fault_reason_survives_later_reasons) {
   f.motorFailed("timeout");
   CHECK(std::strcmp(f.faultReason(), "FSR force limit") == 0);
   CHECK(f.faultFrom() == State::GRASP);
+}
+
+TEST(fsm_servo_not_in_mode0_blocks_and_refuses_open) {
+  Fsm f(cfg());
+  FsmInputs in = ready();
+  in.servoMode = 1;
+  f.step(in);
+  Blocker b[Fsm::MAX_REPORTED];
+  uint8_t n = f.blockers(b, Fsm::MAX_REPORTED);
+  bool found = false;
+  for (uint8_t i = 0; i < n; i++) if (strstr(b[i].text, "not position mode 0")) found = true;
+  CHECK(found);
+  in.cmd = Cmd::OPEN;
+  MotorAction a = f.step(in);
+  CHECK(a.kind == MotorAction::NONE);
+  CHECK(f.state() == State::IDLE);
+  CHECK(strstr(f.reason(), "not in position mode 0") != nullptr);
 }

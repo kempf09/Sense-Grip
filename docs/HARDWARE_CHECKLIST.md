@@ -2,20 +2,22 @@
 
 Run once on real hardware. Gripper unloaded, hand on the E-stop.
 
-1. **Servo gate.** Servo tab: Jog at speed 10 (about 7 RPM). Fingers move and `mode` reads 1. Release: it stops.
-   Power-cycle: `mode` reads the value from before the jog (the mode write is not persisted).
-   After a jog, press Open: no jump on the 1 to 0 switch. If it jumps on the 1 to 0 switch, stop and use step 9 (`runViaPosition`). Any other failure: tick `runViaPosition`.
+1. **Position mode, turns counted.** Servo tab: if `Mode` is not 0, press Set position mode (0).
+   Jog at speed 20 for several turns in one direction: `Position` must pass 4096 and keep counting
+   (no wrap back to 0..4095), and `Mode` stays 0 the whole time. If it wraps, stop and report: the
+   firmware would have to count turns itself. Power-cycle the servo: `Mode` must still read 0.
 2. **Limits.** Set OPEN zero and close limit; press Open. IDLE shows only "not armed".
 3. **Trigger.** Arm with nothing in front. Wave a hand at under 80 mm for over 200 ms: it closes.
    Touch an FSR: it slows. Press with 1 N or more on 2 channels: MONITOR.
 4. **No object.** Arm and trigger with nothing to grasp: FAULT at the close limit, with a reason.
 5. **E-stop.** Press it in PRE_TOUCH, GRASP and OPEN: each gives FAULT with torque off.
 6. **Real grasp.** Grasp a soft object. Press Open: IDLE, disarmed.
-7. **MONITOR hold.** When GRASP ends, the servo switches from speed mode to position hold.
-   Torque is briefly off during the mode change. Check the object does not slip.
+7. **MONITOR hold.** When GRASP ends, torque goes off (the jaw cannot be back-driven). Check the
+   object does not slip and the position stays put.
 8. **Scan.** Scan blocks the controller for up to about 0.6 s (8 baud rates) and E-stop is not serviced during it.
    Only scan with the gripper idle and clear, and keep a hand on the power switch while scanning: the software E-stop does not work during a scan.
-9. **Fallback.** If step 1 fails, tick `runViaPosition` (Servo tab) and repeat steps 3 to 6.
+9. **Open from mid-travel.** Jog about halfway closed; press Open. The fingers return to OPEN zero,
+   `Mode` stays 0, `Position from OPEN zero` ends near 0 and the state returns to IDLE.
 10. **Multi-turn retained.** Jog the fingers about half closed. Power-cycle the servo and the ESP32
     together. After boot, Last action reads "servo stopped at boot" and the fingers have not moved.
     Before pressing Open, check that the position in the Servo tab is the same as before the power
@@ -29,3 +31,6 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
     returns to IDLE (no timeout). Full travel at speed 61 takes about 6 s.
 14. **FAULT stop.** Cause a FAULT during PRE_TOUCH (E-STOP). The fingers must stop and stay put;
     pressing Open while in FAULT must not move them (it says "Reset first").
+15. **SEN0628 dropouts.** Leave the gripper idle for 2 minutes, then jog for 2 minutes. Note on the
+    SEN0628 tab for each sensor: dropouts (moving), max read ms, init fails (stage), plus control
+    loop max and servo bus errors. Report these numbers.

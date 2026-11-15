@@ -175,7 +175,8 @@ static void handleStatus() {
   o.put("]},\"limits\":{\"openZero\":%ld,\"closeLimit\":%ld,\"valid\":",
         (long)cfg.openZero, (long)cfg.closeLimit);
   o.boolean(cfg.limitsValid);
-  o.put("}}");
+  o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu}}",
+        (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors);
   sendOut(o);
 }
 
@@ -192,6 +193,10 @@ static void handleTof() {
     Out o(smallBuf, sizeof(smallBuf));
     if (i) o.put(",");
     o.put("{\"online\":"); o.boolean(s.online);
+    o.put(",\"initialized\":"); o.boolean(s.initialized);
+    o.put(",\"initFailStage\":%u,\"initFails\":%lu,\"lastRc\":%u,\"readUsMax\":%lu,\"dropouts\":%lu,\"dropoutsMoving\":%lu",
+          (unsigned)s.initFailStage, (unsigned long)s.initFails, (unsigned)s.lastRc,
+          (unsigned long)s.readUsMax, (unsigned long)s.dropouts, (unsigned long)s.dropoutsMoving);
     o.put(",\"ok\":%lu,\"err\":%lu,\"ageMs\":", (unsigned long)s.ok, (unsigned long)s.err);
     if (s.online) o.put("%lu", (unsigned long)(now - s.lastGoodMs)); else o.put("null");
     o.put(",\"minMm\":");
@@ -222,7 +227,7 @@ static const Field FIELDS[] = {
   F_(minActiveFsr, T_U8), F_(maxForceN, T_F),
   F_(detectMm, T_U16), F_(detectHoldMs, T_U16),
   F_(preTouchTimeoutMs, T_U32), F_(graspTimeoutMs, T_U32), F_(openTimeoutMs, T_U32),
-  F_(runViaPosition, T_BOOL), F_(fsrEnabled, T_U8),
+  F_(fsrEnabled, T_U8),
   { "tofMask0", T_MASK, offsetof(GripConfig, tofMask), 0 },
   { "tofMask1", T_MASK, offsetof(GripConfig, tofMask), 1 },
   { "tofMask2", T_MASK, offsetof(GripConfig, tofMask), 2 },
@@ -389,6 +394,7 @@ void webBegin() {
   server.on("/api/servo/setClose", HTTP_POST, [] { simple(ControlRequest::SET_CLOSE); });
   server.on("/api/servo/scan", HTTP_POST, [] { simple(ControlRequest::SCAN); });
   server.on("/api/servo/clearLimits", HTTP_POST, [] { simple(ControlRequest::CLEAR_LIMITS); });
+  server.on("/api/servo/positionMode", HTTP_POST, [] { simple(ControlRequest::SET_POSITION_MODE); });
   server.on("/api/servo/calibrateMiddle", HTTP_POST, [] { simple(ControlRequest::CALIBRATE_MIDDLE); });
   server.on("/api/fsm/arm", HTTP_POST, [] { fsmCmd(Cmd::ARM); });
   server.on("/api/fsm/disarm", HTTP_POST, [] { fsmCmd(Cmd::DISARM); });

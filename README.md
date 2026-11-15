@@ -68,14 +68,30 @@ Notes:
   defaults.
 - Jogging is refused while armed (disarm first). A jog stops by itself if the button is released,
   the page loses focus, or 300 ms pass without a repeat. Once both limits are set, jog stops at them;
-  tick **Ignore limits while jogging** to go past them (one jog, then it unticks itself). Not
-  available with "Run via position".
+  tick **Ignore limits while jogging** to go past them (one jog, then it unticks itself).
+- **Position mode only.** All motion (jog, approach, grasp, Open) uses servo position mode 0, and
+  the firmware never changes the servo mode by itself: on this servo a mode write resets the
+  position count (observed on hardware: Open switched the mode and the position jumped to ~0).
+  Jog sends a goal a short way ahead and re-sends it while held; approach and grasp drive toward
+  the close limit and are stopped by the FSM. The jaw cannot be back-driven, so "hold" is torque off.
+- If the Servo tab shows a mode other than 0, the dashboard says so and Open/Arm are refused. Press
+  **Set position mode (0)**: torque off, EEPROM unlock, mode 0, lock (saved in the servo). The
+  position count may reset, so the limits are cleared: jog, then set OPEN zero and close limit again.
+- **Position-jump guard:** if the reported position changes by more than 400 counts within 50 ms
+  (impossible for the motor), the limits are cleared, Open is required again, and a moving FSM
+  goes to FAULT. The SEN0628 tab shows how many jumps were seen.
+- **SEN0628:** initialised once and read through errors, as in Release 3.0.3; a sensor that has
+  started is never restarted. A sensor whose init failed is retried every 2 s. "Online" means a
+  good frame within the last second. The SEN0628 tab shows per sensor: init state and the stage
+  that failed, last read code, longest read, dropouts (and how many happened while the servo was
+  moving), plus the control loop's longest iteration and servo bus errors. Note these after a
+  dropout: they tell wiring/EMI (dropouts while moving) from timing (long reads, slow loop).
 - **Clear limits** (Servo tab) forgets OPEN zero and close limit so you can set them again.
 - FSR tab: untick **Used** on a channel to make the FSM ignore it (not needed for arming, never
   counts as contact or grasp force, ignored by the force limit). Readings are still shown.
   The Servo tab has its own E-STOP button, always enabled.
-- After a jog, Set OPEN zero, Set close limit, or a change of "Close = positive" or "Run via
-  position", press Open again before arming.
+- After a jog, Set OPEN zero, Set close limit, or a change of "Close = positive", press Open again
+  before arming.
 - FSR Zero only works on a channel that is already calibrated.
 - After any FAULT: press Reset (accepted only once the servo is healthy), then press Open again
   before arming.
@@ -124,7 +140,8 @@ The dashboard lists every blocker. Arm is refused while any is present.
 | `servo multi-turn (full-angle) feedback off` | The firmware cannot change this. Set the CF35-12 to multi-turn / full-angle mode with the Waveshare servo configuration tool (the bit reads as register 18 bit 4), then power-cycle the servo. The old firmware needed the same setting, so a servo that worked with it is already set. The Servo tab shows "Full angle: NO" when it is off. Open is refused for this reason too. |
 | `OPEN zero / close limit not set` | Do first-boot steps 4 and 5. |
 | `close limit is not on the closing side of OPEN zero` | Set the limits again with the fingers jogged the right way round. |
-| `not at OPEN — press Open (after power-up, jog, new limits)` | Press Open. Needed after power-up, after every FAULT, after jogging, after setting OPEN zero or close limit, and after changing "Close = positive" or "Run via position". |
+| `not at OPEN — press Open (after power-up, jog, new limits)` | Press Open. Needed after power-up, after every FAULT, after jogging, after setting OPEN zero or close limit, and after changing "Close = positive". |
+| `servo in mode N, not position mode 0 — ...` | Servo tab: Set position mode (0), then set the limits again. If it comes back after a servo power-cycle, the mode is not being saved: report it. |
 | `FSR n not calibrated` | Calibrate channel n on the FSR tab. |
 | `FSR n loaded at rest` | Something is pressing on pad n. Remove it, or Zero the channel. |
 | `no ToF sensor online` | Check I2C wiring and sensor power. |
@@ -148,6 +165,7 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/setClose` | Save current position as close limit |
 | `/api/servo/scan` | Find servo baud rate |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
+| `/api/servo/positionMode` | Torque off, servo mode 0 saved in EEPROM (clears limits) |
 | `/api/servo/calibrateMiddle` | Servo middle calibration at the present position (clears limits) |
 | `/api/fsm/arm`, `/api/fsm/disarm` | Arm / disarm |
 | `/api/fsm/open` | Go to OPEN zero |
