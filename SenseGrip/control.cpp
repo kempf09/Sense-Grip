@@ -10,6 +10,7 @@
 #include "shared.h"
 #include "tof.h"
 #include "homing_core.h"
+#include "sweep_store.h"
 
 static QueueHandle_t gQueue = nullptr;
 static ControlStatus gStatus;
@@ -68,6 +69,15 @@ struct Ctl {
   int32_t homeResidual = 0;
   char homeMsg[64] = "not homed since power-up";
   bool pendingOpen = false;
+  bool openZeroSetThisBoot = false;
+  // Calibration sweep (spec §6.3)
+  bool sweeping = false; uint8_t swPhase = 0; uint32_t swT0 = 0, swPhaseMs = 0;
+  int swN = 0; int32_t swTarget = 0; uint32_t swOk[3] = {0, 0, 0}; uint8_t swContact = 0; uint32_t swFsrSeq = 0;
+  SensorCalib cal[3];
+  // SEN0628 power-up estimate and running position check (spec §6.4)
+  PosEstimate est = {false, 0, 0}; int32_t estRaw = 0; uint32_t estMs = 0;
+  PosEstimate estAtHome = {false, 0, 0}; int32_t estRawAtHome = 0;
+  uint32_t checkMs = 0, mismatchSinceMs = 0; bool mismatching = false;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -120,9 +130,38 @@ constexpr uint32_t HOME_TIMEOUT_MS = 60000, UNSTICK_MS = 500, HOME_STEP_MS = 200
 constexpr int32_t HOME_MAX_RESIDUAL = 600;
 const uint8_t DISTAL_FSR[3] = {5, 3, 4};               // FINGER_FSR_MAP[f][0]
 
-// Task 6 replaces these with the SEN0628-based versions.
-bool fingersVisibleNow(Ctl&) { return true; }           // conservative: no unstick unless known open
-bool estimateDisagrees(Ctl&, int32_t) { return false; }
+// Latest SEN0628 frame as sweep-core input.
+uint8_t currentFrame(uint16_t frame[3][64]) {
+  const TofSnapshot t = tofGet();
+  uint8_t valid = 0;
+  for (int s = 0; s < 3; s++) {
+    memcpy(frame[s], t.s[s].mm, sizeof(frame[s]));
+    if (t.s[s].online) valid |= 1u << s;
+  }
+  return valid;
+}
+
+// Fingers visible: >= 6 finger zones read valid now. Without a sweep we cannot tell: report
+// visible, so the maximum-current push is never used blindly.
+bool fingersVisibleNow(Ctl&) {
+  if (!sweepLoaded()) return true;
+  uint16_t frame[3][64];
+  const uint8_t valid = currentFrame(frame);
+  const SweepModel& m = sweepModel();
+  int n = 0;
+  for (int s = 0; s < 3; s++) {
+    if (!((valid >> s) & 1)) continue;
+    for (int z = 0; z < 64; z++)
+      if (((m.fingerZones[s] >> z) & 1) && frame[s][z] > 0 && frame[s][z] < 4000) n++;
+  }
+  return n >= 6;
+}
+
+// The estimate taken when Home started points to a different turn than the homed frame implies.
+bool estimateDisagrees(Ctl& c, int32_t posOffset) {
+  if (!c.estAtHome.valid) return false;
+  return turnOf(c.estAtHome.pos, c.cfg.touchRef) != turnOf(c.estRawAtHome + posOffset, c.cfg.touchRef);
+}
 
 bool distalTouching(const Ctl& c, const FsrSnapshot& fs) {
   for (uint8_t i : DISTAL_FSR)
@@ -152,7 +191,7 @@ void homeFinish(Ctl& c) {
   const HomeResult r = homeResolve(sv.rawPosition, c.cfg.touchRef, HOME_MAX_RESIDUAL);
   c.homeResidual = r.residual;
   if (!r.ok) { homeStop(c, false, "failed: residual %ld counts (limit %ld) - object in the gripper?", (long)r.residual, (long)HOME_MAX_RESIDUAL); return; }
-  if (estimateDisagrees(c, sv.rawPosition + r.posOffset)) { homeStop(c, false, "failed: SEN0628 estimate disagrees with the touch turn"); return; }
+  if (estimateDisagrees(c, r.posOffset)) { homeStop(c, false, "failed: SEN0628 estimate disagrees with the touch turn"); return; }
   servoStop();
   servoSetOffset(r.posOffset);
   c.havePos = false;                                     // new frame: new jump-guard baseline
@@ -172,6 +211,7 @@ void homeStart(Ctl& c, const ServoSnapshot& sv, uint32_t now) {
   if (fs.agg.channelsInContact > 0) { say(c, false, "Home refused: an FSR shows contact - empty the gripper"); return; }
   c.homing = true; c.homeT0 = now; c.homeStepMs = now; c.homeWinMs = now; c.homeWinPos = sv.fb.position;
   c.homeUnstickUsed = false; c.homeUnstickActive = false; c.homeContact = 0; c.homeFsrSeq = fs.seq;
+  c.estAtHome = c.est; c.estRawAtHome = c.estRaw;
   c.homed = false;
   snprintf(c.homeMsg, sizeof(c.homeMsg), "homing...");
   say(c, true, "Home: closing slowly to fingertip contact");
@@ -213,9 +253,153 @@ void homeUpdate(Ctl& c, uint32_t now) {
   }
 }
 
+// ---- Calibration sweep (spec §6.3) ----
+constexpr uint16_t SWEEP_SPEED = 5, SWEEP_CURRENT = 120;
+constexpr int32_t SWEEP_STEP = 100;
+constexpr uint32_t SWEEP_TIMEOUT_MS = 180000, SWEEP_FRAME_WAIT_MS = 1000, SWEEP_MOVE_WAIT_MS = 5000;
+enum : uint8_t { SW_TO_OPEN = 0, SW_MOVE, SW_FRAMES };
+
+void sweepStop(Ctl& c, bool ok, const char* why) {
+  servoStop();
+  c.sweeping = false;
+  say(c, ok, "Sweep: %s", why);
+}
+
+void sweepRecord(Ctl& c, const ServoSnapshot& sv) {
+  SweepSample& s = sweepSamples()[c.swN];
+  s.pos = sv.fb.position;
+  s.valid = currentFrame(s.mm);
+  c.swN++;
+}
+
+void sweepFinish(Ctl& c) {
+  servoStop();
+  c.sweeping = false;
+  const ServoSnapshot sv = servoGet();
+  const int32_t touch = sv.fb.position;
+  if (!sweepValid(sweepSamples(), c.swN, c.cfg.openZero, c.cfg.closePositive)) {
+    say(c, false, "Sweep: not saved - recording invalid (%d samples); previous sweep kept", c.swN);
+    return;
+  }
+  sweepAnalyze(sweepSamples(), c.swN, c.cal, c.cfg.openZero, touch, c.cfg.closePositive, sweepModel());
+  if (!sweepStoreSave(c.swN)) { say(c, false, "Sweep: could not save /sweep.bin"); sweepStoreBegin(); return; }
+  GripConfig n = c.cfg;
+  n.touchRef = touch; n.touchValid = true;
+  n.closeLimit = touch - (n.closePositive ? 1 : -1) * 100;
+  n.limitsValid = true;
+  if (limitsProblem(n)) n.limitsValid = false;
+  configSave(n);
+  c.cfg = n;
+  applyConfig(c);
+  c.homed = true;                                        // the sweep defines the logical frame
+  snprintf(c.homeMsg, sizeof(c.homeMsg), "homed by calibration sweep");
+  say(c, true, "Sweep: saved %d samples, touch at %ld - opening", c.swN, (long)touch);
+  c.pendingOpen = true;
+}
+
+void sweepStart(Ctl& c, const ServoSnapshot& sv, uint32_t now) {
+  if (c.fsm.armed()) { say(c, false, "Sweep: disarm first"); return; }
+  if (!sweepSamples()) { say(c, false, "Sweep refused: no memory for the sweep buffer"); return; }
+  if (!sv.online || !sv.modeKnown || sv.mode != 0) { say(c, false, "Sweep refused: servo offline or not in position mode 0"); return; }
+  if (!c.cfg.limitsValid && !c.openZeroSetThisBoot) { say(c, false, "Sweep refused: set OPEN zero first"); return; }
+  if (!c.homed && c.cfg.touchValid) { say(c, false, "Sweep refused: press Home first"); return; }
+  if (fsrGet().agg.channelsInContact > 0) { say(c, false, "Sweep refused: an FSR shows contact - empty the gripper"); return; }
+  c.sweeping = true; c.swPhase = SW_TO_OPEN; c.swT0 = now; c.swPhaseMs = now; c.swN = 0; c.swContact = 0;
+  c.swFsrSeq = fsrGet().seq;
+  if (!servoMoveTo(c.cfg.openZero, c.cfg.openSpeed, c.cfg.openTorqueLimit)) { sweepStop(c, false, "servo command failed"); return; }
+  say(c, true, "Sweep: moving to OPEN zero");
+}
+
+void sweepUpdate(Ctl& c, uint32_t now) {
+  if (!c.sweeping) return;
+  const ServoSnapshot sv = servoGet();
+  if (!sv.online || sv.ageMs > SERVO_FRESH_MS) { sweepStop(c, false, "aborted: servo feedback lost"); return; }
+  if ((uint32_t)(now - c.swT0) >= SWEEP_TIMEOUT_MS) { sweepStop(c, false, "aborted: timeout"); return; }
+  if (c.swN >= SWEEP_MAX) { sweepStop(c, false, "aborted: too many samples (touch not reached)"); return; }
+  const FsrSnapshot fs = fsrGet();
+  if (c.swPhase != SW_TO_OPEN && fs.seq != c.swFsrSeq) {
+    c.swFsrSeq = fs.seq;
+    c.swContact = distalTouching(c, fs) ? (uint8_t)(c.swContact + 1) : 0;
+    if (c.swContact >= 3) { sweepFinish(c); return; }
+  }
+  const int32_t dir = c.cfg.closePositive ? 1 : -1;
+  switch (c.swPhase) {
+    case SW_TO_OPEN: {
+      const int32_t err = sv.fb.position - c.cfg.openZero;
+      if (!sv.fb.moving && err <= (int32_t)c.cfg.openToleranceCounts && err >= -(int32_t)c.cfg.openToleranceCounts) {
+        servoStop();
+        c.swPhase = SW_FRAMES; c.swPhaseMs = now;
+        const TofSnapshot t = tofGet();
+        for (int s = 0; s < 3; s++) c.swOk[s] = t.s[s].ok;
+        say(c, true, "Sweep: recording");
+      } else if ((uint32_t)(now - c.swPhaseMs) >= 30000) sweepStop(c, false, "aborted: OPEN zero not reached");
+      return;
+    }
+    case SW_FRAMES: {
+      const TofSnapshot t = tofGet();
+      bool fresh = true;
+      for (int s = 0; s < 3; s++) if (t.s[s].online && t.s[s].ok < c.swOk[s] + 2) fresh = false;
+      if (!fresh && (uint32_t)(now - c.swPhaseMs) < SWEEP_FRAME_WAIT_MS) return;
+      sweepRecord(c, sv);
+      c.swTarget = sv.fb.position + dir * SWEEP_STEP;
+      if (!servoMoveTo(c.swTarget, SWEEP_SPEED, SWEEP_CURRENT)) { sweepStop(c, false, "servo command failed"); return; }
+      c.swPhase = SW_MOVE; c.swPhaseMs = now;
+      return;
+    }
+    case SW_MOVE: {
+      const int32_t err = sv.fb.position - c.swTarget;
+      const bool arrived = !sv.fb.moving && err <= 15 && err >= -15;
+      const bool stuck = (uint32_t)(now - c.swPhaseMs) >= SWEEP_MOVE_WAIT_MS;
+      if (stuck && !arrived) { sweepStop(c, false, "aborted: jaw stopped without fingertip contact"); return; }
+      if (!arrived) return;
+      servoStop();
+      c.swPhase = SW_FRAMES; c.swPhaseMs = now;
+      const TofSnapshot t = tofGet();
+      for (int s = 0; s < 3; s++) c.swOk[s] = t.s[s].ok;
+      return;
+    }
+  }
+}
+
+// ---- SEN0628 power-up estimate and running check (spec §6.4) ----
+void estimateUpdate(Ctl& c, uint32_t now) {
+  if (!sweepLoaded() || c.homed || c.homing || c.sweeping) return;
+  if ((uint32_t)(now - c.estMs) < 500) return;
+  c.estMs = now;
+  uint16_t frame[3][64];
+  const uint8_t valid = currentFrame(frame);
+  c.est = estimatePosition(sweepModel(), sweepSamples(), frame, valid);
+  c.estRaw = servoGet().rawPosition;
+}
+
+void checkUpdate(Ctl& c, uint32_t now) {
+  if (!sweepLoaded() || !c.homed || c.homing || c.sweeping) { c.mismatching = false; return; }
+  if ((uint32_t)(now - c.checkMs) < 200) return;
+  c.checkMs = now;
+  const State st = c.fsm.state();
+  const ServoSnapshot sv = servoGet();
+  const TofSnapshot t = tofGet();
+  const int32_t fromOpen = c.cfg.closePositive ? sv.fb.position - c.cfg.openZero : c.cfg.openZero - sv.fb.position;
+  if ((st != State::IDLE && st != State::MONITOR) || fromOpen <= FINGERS_INVISIBLE_COUNTS || t.objectPresent || c.jogActive) {
+    c.mismatching = false; return;
+  }
+  uint16_t frame[3][64];
+  const uint8_t valid = currentFrame(frame);
+  if (!positionMismatch(sweepModel(), sweepSamples(), sv.fb.position, frame, valid, 25.0f)) { c.mismatching = false; return; }
+  if (!c.mismatching) { c.mismatching = true; c.mismatchSinceMs = now; return; }
+  if ((uint32_t)(now - c.mismatchSinceMs) > 1000) {
+    c.mismatching = false;
+    c.homed = false;
+    c.fsm.invalidateOpened();
+    snprintf(c.homeMsg, sizeof(c.homeMsg), "position check failed - press Home");
+    say(c, false, "SEN0628 view disagrees with the motor position: position check failed - press Home");
+  }
+}
+
 void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
   // Any request (other than another Home press) aborts a running Home.
   if (c.homing && r.kind != ControlRequest::HOME) homeStop(c, false, "aborted by operator request");
+  if (c.sweeping && r.kind != ControlRequest::SWEEP) sweepStop(c, false, "aborted by operator request");
   if (r.kind == ControlRequest::FSM_CMD) {
     jogStop(c);
     cmdOut = r.cmd;
@@ -233,7 +417,8 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
                    : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits"
                    : r.kind == ControlRequest::CALIBRATE_MIDDLE ? "calibrate middle"
                    : r.kind == ControlRequest::SET_POSITION_MODE ? "set position mode"
-                   : r.kind == ControlRequest::HOME ? "home" : "config";
+                   : r.kind == ControlRequest::HOME ? "home"
+                   : r.kind == ControlRequest::SWEEP ? "sweep" : "config";
   State st = c.fsm.state();
   if (st != State::IDLE && st != State::FAULT) {
     say(c, false, "%s only allowed in IDLE or FAULT (now %s)", what, stateName(st));
@@ -287,6 +472,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       jogStop(c);
       GripConfig n = c.cfg;
       if (isOpen) n.openZero = sv.fb.position; else n.closeLimit = sv.fb.position;
+      if (isOpen) c.openZeroSetThisBoot = true;
       n.limitsValid = true;
       const char* prob = limitsProblem(n);
       n.limitsValid = (prob == nullptr);
@@ -310,8 +496,14 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       say(c, true, "limits cleared: jog freely, then set OPEN zero and close limit again");
       return;
     }
+    case ControlRequest::SWEEP: {
+      if (c.sweeping || c.homing) return;
+      jogStop(c);
+      sweepStart(c, sv, now);
+      return;
+    }
     case ControlRequest::HOME: {
-      if (c.homing) return;                               // already running
+      if (c.homing || c.sweeping) return;                 // already running
       jogStop(c);
       homeStart(c, sv, now);
       return;
@@ -448,6 +640,7 @@ void checkPositionJump(Ctl& c, uint32_t now) {
       c.fsm.invalidateOpened();
       c.homed = false;
       if (c.homing) homeStop(c, false, "aborted: position jumped");
+      if (c.sweeping) sweepStop(c, false, "aborted: position jumped");
       say(c, false, "servo position jumped %ld -> %ld: limits cleared, set them again", (long)c.lastPos, (long)pos);
     }
   }
@@ -466,6 +659,9 @@ void publish(Ctl& c) {
   s.lastActionOk = c.msgOk;
   s.loopMaxUs = c.loopMaxUs; s.posJumps = c.posJumps; s.fsrSampleUsMax = c.fsrUsMax;
   s.homed = c.homed; s.homing = c.homing; s.homeResidual = c.homeResidual;
+  s.sweeping = c.sweeping; s.sweepN = c.swN; s.sweepLoaded = sweepLoaded();
+  s.estValid = c.est.valid && !c.homed; s.estPos = c.est.pos;
+  s.estTurn = c.cfg.touchValid ? turnOf(c.est.pos, c.cfg.touchRef) : 0;
   snprintf(s.homeMsg, sizeof(s.homeMsg), "%s", c.homeMsg);
   portENTER_CRITICAL(&gMux);
   memcpy(&gStatus, &s, sizeof(s));
@@ -507,6 +703,8 @@ void retryBootStop(Ctl& c) {
 void controlTask(void*) {
   Ctl* c = new Ctl(configLoad());
   applyConfig(*c);                     // no motion at boot
+  tofCalibLoad(c->cal);                // SEN0628 calibration saved by the 3.0.3 3D page
+  sweepStoreBegin();                   // LittleFS + /sweep.bin (if any)
   bootStop(*c);
   // Mode/phase are read on the first iteration so Open is not refused for the first second.
   uint32_t lastServo = 0, lastFsr = 0, lastMode = 0;
@@ -525,6 +723,7 @@ void controlTask(void*) {
     if (estop) {
       jogStop(*c);
       if (c->homing) homeStop(*c, false, "aborted by E-stop");
+      if (c->sweeping) sweepStop(*c, false, "aborted by E-stop");
       cmd = Cmd::ESTOP;
     } else if (gQueue) {
       ControlRequest r;
@@ -562,6 +761,9 @@ void controlTask(void*) {
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     homeUpdate(*c, now);
+    sweepUpdate(*c, now);
+    estimateUpdate(*c, now);
+    checkUpdate(*c, now);
     if (c->pendingOpen && cmd == Cmd::NONE) { c->pendingOpen = false; cmd = Cmd::OPEN; }
     FsmInputs fin = buildInputs(now, cmd);
     fin.homed = c->homed;

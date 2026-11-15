@@ -16,6 +16,7 @@
 #include "servo.h"
 #include "servo_proto.h"
 #include "tof.h"
+#include "sweep_store.h"
 #include "web.h"
 #include "web_pages.h"
 
@@ -182,6 +183,10 @@ static void handleStatus() {
   o.put("},\"home\":{\"homed\":"); o.boolean(cs.homed);
   o.put(",\"homing\":"); o.boolean(cs.homing);
   o.put(",\"residual\":%ld,\"msg\":", (long)cs.homeResidual); o.str(cs.homeMsg);
+  o.put(",\"sweeping\":"); o.boolean(cs.sweeping);
+  o.put(",\"sweepN\":%ld,\"sweepLoaded\":", (long)cs.sweepN); o.boolean(cs.sweepLoaded);
+  o.put(",\"estimate\":");
+  if (cs.estValid) o.put("{\"pos\":%ld,\"turn\":%ld}", (long)cs.estPos, (long)cs.estTurn); else o.put("null");
   o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu}}",
         (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors,
         (unsigned long)cs.fsrSampleUsMax);
@@ -364,6 +369,31 @@ static void handleZeroPost() {
   sendJson(200, "{\"ok\":true}");
 }
 
+// ---------------------------------------------------------------- sweep
+// GET /api/sweep: positions, fingertip opening and finger zones of the stored sweep (chunked).
+static void handleSweepGet() {
+  const SweepModel& m = sweepModel();
+  const SweepSample* s = sweepSamples();
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+  char b[96];
+  const int n = (sweepLoaded() && s) ? m.n : 0;
+  snprintf(b, sizeof b, "{\"ok\":true,\"n\":%d,\"openZero\":%ld,\"touchRef\":%ld,\"positions\":[",
+           n, (long)m.openZero, (long)m.touchRef);
+  server.sendContent(b);
+  for (int i = 0; i < n; i++) { snprintf(b, sizeof b, i ? ",%ld" : "%ld", (long)s[i].pos); server.sendContent(b); }
+  server.sendContent("],\"opening\":[");
+  for (int i = 0; i < n; i++) { snprintf(b, sizeof b, i ? ",%.1f" : "%.1f", (double)m.opening[i]); server.sendContent(b); }
+  server.sendContent("],\"fingerZones\":[");
+  for (int k = 0; k < 3; k++) {
+    snprintf(b, sizeof b, "%s\"%016llx\"", k ? "," : "", (unsigned long long)(n ? m.fingerZones[k] : 0));
+    server.sendContent(b);
+  }
+  server.sendContent("]}");
+  server.sendContent("");
+}
+
 // ---------------------------------------------------------------- servo
 static void handleJog() {
   long long v;
@@ -404,6 +434,8 @@ void webBegin() {
   server.on("/api/servo/scan", HTTP_POST, [] { simple(ControlRequest::SCAN); });
   server.on("/api/servo/clearLimits", HTTP_POST, [] { simple(ControlRequest::CLEAR_LIMITS); });
   server.on("/api/servo/home", HTTP_POST, [] { simple(ControlRequest::HOME); });
+  server.on("/api/servo/sweep", HTTP_POST, [] { simple(ControlRequest::SWEEP); });
+  server.on("/api/sweep", HTTP_GET, handleSweepGet);
   server.on("/api/servo/positionMode", HTTP_POST, [] { simple(ControlRequest::SET_POSITION_MODE); });
   server.on("/api/servo/calibrateMiddle", HTTP_POST, [] { simple(ControlRequest::CALIBRATE_MIDDLE); });
   server.on("/api/fsm/arm", HTTP_POST, [] { fsmCmd(Cmd::ARM); });

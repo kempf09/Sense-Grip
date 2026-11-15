@@ -5,7 +5,7 @@
 #include "fsm_core.h"
 
 struct ControlRequest {
-  enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG, CLEAR_LIMITS, CALIBRATE_MIDDLE, SET_POSITION_MODE, HOME } kind;
+  enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG, CLEAR_LIMITS, CALIBRATE_MIDDLE, SET_POSITION_MODE, HOME, SWEEP } kind;
   Cmd cmd; int16_t speed; bool ignoreLimits; GripConfig cfg;   // ignoreLimits: JOG only
 };
 
@@ -17,6 +17,8 @@ struct ControlStatus {
   uint32_t loopMaxUs;     // longest control-loop iteration in the last 5 s (diagnostics)
   uint32_t posJumps;      // servo position jumps detected since boot
   bool homed, homing; int32_t homeResidual; char homeMsg[64];
+  bool sweeping, sweepLoaded; int32_t sweepN;
+  bool estValid; int32_t estPos, estTurn;   // SEN0628 power-up estimate (only before homing)
   uint32_t fsrSampleUsMax; // longest FSR sample pass in the last 5 s (spec: reduce oversampling if > 4 ms)
 };
 
