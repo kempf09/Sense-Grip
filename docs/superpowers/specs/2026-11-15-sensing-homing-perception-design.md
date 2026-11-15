@@ -68,13 +68,19 @@ Each phase ships and is tested on hardware before the next starts.
   yaw 90/210/330°, pitched 30°, FoV 60°, 8×8 zones at 7.5° steps; palm radius 50 mm; fingers at
   yaw 30/150/270°, fingertip radius 170.28 mm when open. Per-sensor orientation/range
   calibration from NVS namespace `senCal2` (orientation, rangeScale, rangeOffset, yaw/pitch/roll
-  corrections) — reuse it. Reference implementation of the geometry: Release 3.0.3 `.ino`
-  (git `17e87bc`), functions `mechanicalAxes`, `localRay`, `localToWorld`, `makePoseMatrix`,
-  `pointFor`, `matrixSourceIndex` (lines ~1241–1264).
+  corrections). **The operator confirmed the sensors were calibrated and saved there**: read
+  `senCal2` in firmware and port the geometry to C++ (pure, host-tested module `tof_geometry`).
+  Reference implementation (it was dashboard JavaScript, the firmware only stored the values):
+  `git show 17e87bc:SENSE_GRIP_Release_3_0_3_Simple_FSM.ino`, functions `mechanicalAxes`,
+  `localRay`, `localToWorld`, `makePoseMatrix`, `pointFor`, `matrixSourceIndex` (lines ~1241–1264)
+  and the `senCal2` loader (lines ~280–300).
 - The SEN0628 cannot see the fingers in the first ~1 000 counts from open; beyond that the
   fingers are visible.
-- Objects are roughly centred, either resting on the palm or held by hand in the sensors' zone.
-  Sensors are 101 mm from the centre and can usually still see the object while it is grasped.
+- Objects are roughly centred. **Large objects rest on the palm; small objects hang from a
+  string** (so no hand is in view). The drill is presented with its **handle parallel to the
+  palm**. Sensors are 101 mm from the centre and can usually still see the object while grasped.
+- **Over-travel past open:** some headroom, but the mechanism can get stuck there and then needs
+  maximum current to start closing. Opening beyond OPEN zero must be avoided.
 
 ## 5. Phase 1 — FSR filtering
 
@@ -115,14 +121,21 @@ logical. Goals sent to the servo are `logical − posOffset`. After power-up `po
 Operator presses **Home** (Combined and Servo tabs). Preconditions: servo online, mode 0,
 disarmed, no FSR reading contact. Procedure:
 1. Close at **homing speed 5** with **homing current 120 units (~0.8 A)**, as repeated
-   position-mode steps (like jog), until **any distal FSR ≥ contact threshold for 3 samples**
-   or **stall** (position changes < 10 counts over 300 ms while commanded).
+   position-mode steps (like jog), until **any distal FSR ≥ contact threshold for 3 samples**.
+   A stall without distal contact (position changes < 10 counts over 300 ms) **fails Home**
+   ("stopped without fingertip contact") — a stall-only stop could pick the wrong turn and the
+   following Open would over-travel past open.
+   **Unstick:** if the jaw does not move within 300 ms of the first step, retry the step once
+   with maximum current (415 units ≈ 2.7 A) for at most 500 ms, then continue at homing current.
 2. Torque off. Read raw position `r`.
 3. Choose `k` so that `r + posOffset_k` (with `posOffset_k = k·4096`) is nearest to the saved
    **touch reference** `T` (logical). Residual = `(r + posOffset) − T`.
    - |residual| ≤ 600 counts → homed. Log the residual.
    - otherwise → homing failed (mechanics or reference changed); offer re-calibration.
-4. Open to OPEN zero (now valid in the logical frame).
+   - If the SEN0628 estimate (§6.4) is available and points to a different turn → homing failed
+     ("SEN0628 disagrees: turn a vs b"), nothing moves.
+4. Open to OPEN zero (now valid in the logical frame). No motion command may ever target beyond
+   OPEN zero (jog included, unless "Ignore limits" is ticked).
 Timeout 60 s (full travel at speed 5 ≈ 80 s worst case is too long — **builder's call:** start
 at speed 15 until 3 000 counts before the expected touch window if a coarse SEN0628 estimate is
 available, else speed 10).
@@ -162,6 +175,10 @@ Derived and stored with the sweep:
 ### 7.1 Object points
 Per frame: zones that are not finger zones (for the current position, from the sweep) and not
 background (empty-gripper reading at that position, minus a margin of 15 mm) are object zones.
+Only points within **100 mm of the gripper axis** and **above the palm** count (rejects the
+table, string holder, people). A **Capture background** button (SEN0628 tab) re-records the
+empty-gripper background at the current position without a full sweep (for re-mounting /
+new filming location); the sweep's per-position background is corrected by the difference.
 Convert to 3-D points with the sensor geometry and `senCal2` calibration (§4).
 
 ### 7.2 Width, class, shape
@@ -194,9 +211,13 @@ States stay IDLE → START → PRE_TOUCH → GRASP → MONITOR → OPEN (+FAULT,
 | large | 10 mm | 4.0 N | 350 |
 | **delicate** (hidden override) | 15 mm | 0.4 N, grasp speed 3 | 150 |
 
-*All values builder's/operator's defaults, editable.* **Delicate** is a hidden setting (Settings,
-"advanced", not on the Combined tab) that, when on, replaces the class profile for the next grasp
-(the egg). The detected class is still shown.
+*All values builder's/operator's defaults, editable.* The class table, thresholds, **class
+override** (auto / small / medium / large) and **Delicate** live on the **SEN0628 tab** (object
+classification settings), not on the Combined tab. The override exists for objects whose grasp
+section misrepresents them (the drill: handle ~40–50 mm would classify small; force "large").
+Override and Delicate **stay on until switched off, are not kept across a reboot** (RAM), and
+show a clear badge on the Combined tab ("DELICATE" / "CLASS: LARGE (forced)"). The detected class
+is still shown next to it.
 
 ### 7.5 Contact pattern
 Per finger, which FSR touched first: **proximal-first → "wrap"** (expected for large objects),
