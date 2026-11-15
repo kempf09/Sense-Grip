@@ -77,8 +77,11 @@ Notes:
 - If the Servo tab shows a mode other than 0, the dashboard says so and Open/Arm are refused. Press
   **Set position mode (0)**: torque off, EEPROM unlock, mode 0, lock (saved in the servo). The
   position count may reset, so the limits are cleared: jog, then set OPEN zero and close limit again.
+- **Limits after this update:** limits saved by earlier builds are cleared on first boot (they
+  may have been taken before a position-count reset). Jog, set OPEN zero and close limit again.
 - **Position-jump guard:** if the reported position changes by more than 400 counts within 50 ms
-  (impossible for the motor), the limits are cleared, Open is required again, and a moving FSM
+  (impossible for the motor), or by more than 400 counts at all while nothing is driving it (the
+jaw cannot be back-driven), the limits are cleared, Open is required again, and a moving FSM
   goes to FAULT. The SEN0628 tab shows how many jumps were seen.
 - **SEN0628:** initialised once and read through errors, as in Release 3.0.3; a sensor that has
   started is never restarted. A sensor whose init failed is retried every 2 s. "Online" means a

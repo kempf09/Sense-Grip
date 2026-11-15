@@ -192,10 +192,10 @@ TEST(fsm_grasp_failed_sample_resets_count) {
 TEST(fsm_close_limit_without_contact_faults) {
   Fsm f = preTouchFsm(100);
   FsmInputs in = ready(200);
-  in.position = 19101;
+  in.position = 19102 - 9;                       // just outside the 8-count tolerance
   f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
-  in.position = 19102;
+  in.position = 19102 - 8;                       // within tolerance of the close limit
   MotorAction a = f.step(in);
   CHECK(f.state() == State::FAULT);
   CHECK(a.kind == MotorAction::STOP);
@@ -216,9 +216,9 @@ TEST(fsm_close_limit_mirrored_when_closing_negative) {
   in.objectPresent = true;
   f.step(in); f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
-  in.position = 1969; f.step(in);
+  in.position = 1968 + 9; f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
-  in.position = 1968; f.step(in);
+  in.position = 1968 + 8; f.step(in);
   CHECK(f.state() == State::FAULT);
 }
 
@@ -621,4 +621,18 @@ TEST(fsm_servo_not_in_mode0_blocks_and_refuses_open) {
   CHECK(a.kind == MotorAction::NONE);
   CHECK(f.state() == State::IDLE);
   CHECK(strstr(f.reason(), "not in position mode 0") != nullptr);
+}
+
+TEST(fsm_close_limit_reached_within_tolerance_faults) {
+  Fsm f = openedFsm();
+  FsmInputs in = ready();
+  in.cmd = Cmd::ARM; f.step(in);
+  in.cmd = Cmd::NONE; in.objectPresent = true;
+  f.step(in); f.step(in);                       // IDLE -> START -> PRE_TOUCH
+  CHECK(f.state() == State::PRE_TOUCH);
+  in.position = cfg().closeLimit - 5;           // servo stopped just short of its goal
+  in.nowMs += 10;
+  f.step(in);
+  CHECK(f.state() == State::FAULT);
+  CHECK(strstr(f.faultReason(), "close limit") != nullptr);
 }

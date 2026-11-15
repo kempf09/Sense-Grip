@@ -192,13 +192,18 @@ bool servoPoll() {
 
 bool servoReadModeAndPhase() {
   uint8_t mode = 255, phase = 0;
+  static uint8_t modeFails = 0;              // UART-task-only
   if (!readRegs(33, 1, &mode) || mode > 3) {
     svPhaseUpdate(phaseLatch, false, 0);       // counts as a failed phase read
+    // Like fullAngle: one dropped reply keeps the last good mode; 3 in a row clear it.
+    if (modeFails < 255) modeFails++;
     portENTER_CRITICAL(&mux);
-    snap.modeKnown = false; snap.mode = 255; snap.fullAngle = phaseLatch.fullAngle;
+    if (modeFails >= 3) { snap.modeKnown = false; snap.mode = 255; }
+    snap.fullAngle = phaseLatch.fullAngle;
     portEXIT_CRITICAL(&mux);
     return false;
   }
+  modeFails = 0;
   portENTER_CRITICAL(&mux); snap.mode = mode; snap.modeKnown = true; portEXIT_CRITICAL(&mux);
   const bool phaseOk = readRegs(18, 1, &phase);
   svPhaseUpdate(phaseLatch, phaseOk, phase);   // one dropped reply keeps the last good value

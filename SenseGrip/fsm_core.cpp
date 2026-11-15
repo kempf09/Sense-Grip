@@ -236,8 +236,11 @@ bool Fsm::graspReached(const FsmInputs& in) {
   return graspCount_ >= cfg_.graspSamples;
 }
 
+// "Reached" includes the last openToleranceCounts: in position mode the servo stops at
+// (or just short of) its goal, which is the close limit itself.
 bool Fsm::pastCloseLimit(int32_t pos) const {
-  return cfg_.closePositive ? pos >= cfg_.closeLimit : pos <= cfg_.closeLimit;
+  const int32_t tol = cfg_.openToleranceCounts;
+  return cfg_.closePositive ? pos >= cfg_.closeLimit - tol : pos <= cfg_.closeLimit + tol;
 }
 
 bool Fsm::outsideTravel(int32_t pos) const {

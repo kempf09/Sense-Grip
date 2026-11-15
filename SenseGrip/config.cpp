@@ -3,7 +3,10 @@
 #include <math.h>
 
 namespace {
-constexpr uint8_t CFG_VERSION = 3;   // 3: + fsrEnabled. (v2 builds saved speeds up to 3400; clampConfig brings them back to <= 61)
+constexpr uint8_t CFG_VERSION = 4;   // 3: + fsrEnabled; 4: same layout, older limits invalidated
+// Limits saved before v4 were taken while the servo's position count could be reset by a
+// mode write (hardware-observed), so they may not match the jaw: v1..v3 blobs load with
+// limitsValid = false. (v2 builds saved speeds up to 3400; clampConfig brings them to <= 61.)
 
 // Release 3.0.3 FsmConfig layout, copied verbatim for migration (read-only).
 struct FsmConfig {
@@ -31,12 +34,13 @@ bool loadNew(GripConfig& out, bool& upgraded) {
   bool ok = false;
   const uint8_t ver = p.getUChar("ver", 0);
   const size_t len = p.getBytesLength("cfg");
-  const size_t want = ver == CFG_VERSION ? sizeof(GripConfig)
+  const size_t want = (ver == CFG_VERSION || ver == 3) ? sizeof(GripConfig)
                     : (ver == 1 || ver == 2) ? GRIP_CONFIG_V2_SIZE : 0;
   if (want && len == want) {
     GripConfig tmp = defaultConfig();          // fields missing from older blobs keep defaults
     if (p.getBytes("cfg", &tmp, want) == want) {
       upgraded = ver != CFG_VERSION;
+      if (upgraded) tmp.limitsValid = false;
       out = tmp; ok = true;
     }
   }
@@ -56,7 +60,7 @@ bool loadLegacy(GripConfig& out) {
       c.closePositive = f.closePositive;
       int32_t sign = f.closePositive ? 1 : -1;
       c.closeLimit = f.touchPosition - sign * (int32_t)f.travelSafetyMarginCounts;
-      c.limitsValid = f.openZeroValid && f.touchPositionValid;
+      c.limitsValid = false;   // the position frame may have changed since (see CFG_VERSION note)
       out = c;
       ok = true;
     }
@@ -79,7 +83,7 @@ GripConfig configLoad() {
   GripConfig c = defaultConfig();
   bool upgraded = false;
   if (loadNew(c, upgraded)) {
-    if (upgraded) { clampConfig(c); configSave(c); }   // keeps limits, replaces old speeds
+    if (upgraded) { clampConfig(c); configSave(c); }   // older blob: limits invalidated, rest kept
   } else {
     c = defaultConfig();
     if (loadLegacy(c)) {

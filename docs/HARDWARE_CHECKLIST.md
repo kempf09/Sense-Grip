@@ -5,7 +5,10 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 1. **Position mode, turns counted.** Servo tab: if `Mode` is not 0, press Set position mode (0).
    Jog at speed 20 for several turns in one direction: `Position` must pass 4096 and keep counting
    (no wrap back to 0..4095), and `Mode` stays 0 the whole time. If it wraps, stop and report: the
-   firmware would have to count turns itself. Power-cycle the servo: `Mode` must still read 0.
+   firmware would have to count turns itself. Then, with the fingers half closed, power-cycle the
+   servo: `Mode` must still read 0 and `Position` must be the same as before. If the position
+   changed, the count is lost at power-up: clear and re-set the limits after every servo power-up
+   (and don't rely on "press Open" alone) until this is solved.
 2. **Limits.** Set OPEN zero and close limit; press Open. IDLE shows only "not armed".
 3. **Trigger.** Arm with nothing in front. Wave a hand at under 80 mm for over 200 ms: it closes.
    Touch an FSR: it slows. Press with 1 N or more on 2 channels: MONITOR.

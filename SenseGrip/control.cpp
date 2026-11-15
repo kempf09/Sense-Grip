@@ -208,6 +208,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       c.cfg = n;
       applyConfig(c);
       c.fsm.invalidateOpened();
+      c.havePos = false;                   // the count may reset: take a new baseline
       say(c, true, "servo in position mode 0 (saved); limits cleared - jog, set OPEN zero and close limit again");
       return;
     }
@@ -223,6 +224,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       c.cfg = n;
       applyConfig(c);
       c.fsm.invalidateOpened();
+      c.havePos = false;                   // positions shift: take a new baseline
       say(c, true, "servo middle calibrated here (torque off); limits cleared - set OPEN zero and close limit again");
       return;
     }
@@ -302,18 +304,22 @@ bool applyAction(const MotorAction& a) {
   }
 }
 
-// Cause-independent guard: the jaw cannot move faster than ~3100 counts/s (speed 61), so a
-// position change of more than 400 counts within 50 ms means the servo's position count
-// was reset (e.g. by a mode change). The saved limits and "opened" no longer apply.
+// Cause-independent guard against a lost position count. The jaw cannot be back-driven,
+// so with no command running (IDLE/FAULT, no jog) it cannot move at all: any change over
+// 400 counts, across any gap (e.g. a servo power glitch), means the count was reset. While
+// moving, allow 400 counts plus the maximum rate (~3200 counts/s at speed 61) x elapsed.
 void checkPositionJump(Ctl& c, uint32_t now) {
   ServoSnapshot sv = servoGet();
-  if (!sv.online || sv.ageMs > SERVO_FRESH_MS) { c.havePos = false; return; }
+  if (!sv.online || sv.ageMs > SERVO_FRESH_MS) return;      // keep the last known baseline
   const int32_t pos = sv.fb.position;
-  if (c.havePos && (uint32_t)(now - c.lastPosMs) <= 50) {
+  if (c.havePos) {
     const int32_t d = pos - c.lastPos;
-    if (d > 400 || d < -400) {
+    const State st = c.fsm.state();
+    const bool commanded = c.jogActive || (st != State::IDLE && st != State::FAULT);
+    const uint32_t dt = (uint32_t)(now - c.lastPosMs);
+    const int64_t allowed = commanded ? 400 + (int64_t)dt * 32 / 10 : 400;
+    if (d > allowed || d < -allowed) {
       c.posJumps++;
-      State st = c.fsm.state();
       if (st != State::IDLE && st != State::FAULT) c.fsm.motorFailed("servo position jumped (count reset?)");
       jogStop(c);
       if (c.cfg.limitsValid) {
