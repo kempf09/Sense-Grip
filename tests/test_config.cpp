@@ -75,3 +75,13 @@ TEST(config_v4_blob_size_includes_trailing_padding) {
   CHECK_EQ((unsigned)GRIP_CONFIG_V4_BLOB_SIZE, (unsigned)(GRIP_CONFIG_V2_SIZE + 8));
   CHECK_EQ((unsigned)GRIP_CONFIG_V4_SIZE, (unsigned)(GRIP_CONFIG_V2_SIZE + 1));
 }
+TEST(config_touch_defaults) {
+  auto c = defaultConfig();
+  CHECK_EQ(c.touchRef, 0);
+  CHECK(!c.touchValid);
+}
+TEST(config_v5_blob_sizes) {
+  CHECK_EQ((unsigned)GRIP_CONFIG_V5_SIZE, (unsigned)offsetof(GripConfig, touchRef));
+  CHECK_EQ((unsigned)(GRIP_CONFIG_V5_BLOB_SIZE % alignof(GripConfig)), 0u);
+  CHECK(GRIP_CONFIG_V5_BLOB_SIZE >= GRIP_CONFIG_V5_SIZE);
+}

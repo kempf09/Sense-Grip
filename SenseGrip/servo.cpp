@@ -12,6 +12,7 @@ constexpr uint32_t REPLY_TIMEOUT_US = 25000;
 constexpr uint8_t  ACCEL = 50;          // units of 8.7 deg/s^2, as in the Waveshare CF examples
 constexpr size_t   RX_CAP = 64;
 
+int32_t  posOffset = 0;          // logical = servo + posOffset (RAM; homing sets it)
 uint8_t  servoId = 1;
 uint32_t servoBaud = 1000000;
 
@@ -186,7 +187,8 @@ bool servoPoll() {
   }
   const ServoFeedback fb = svDecodeFeedback(b);
   portENTER_CRITICAL(&mux);
-  snap.fb = fb; snap.online = true; lastGoodMs = millis(); everGood = true;
+  snap.fb = fb; snap.rawPosition = fb.position; snap.fb.position = fb.position + posOffset;
+  snap.online = true; lastGoodMs = millis(); everGood = true;
   portEXIT_CRITICAL(&mux);
   return true;
 }
@@ -216,7 +218,7 @@ bool servoReadModeAndPhase() {
 bool servoMoveTo(int32_t position, uint16_t speed, uint16_t torqueLimit) {
   if (speed < 1) speed = 1;
   if (!requireMode0()) return false;          // nothing was written: nothing to undo
-  if (writeGoalBlock(position, speed, torqueLimit)) { clearError(); return true; }
+  if (writeGoalBlock(position - posOffset, speed, torqueLimit)) { clearError(); return true; }
   cleanupStop();  // best effort; lastError keeps the original failure
   return false;
 }
@@ -305,3 +307,11 @@ void servoSetLimits(int32_t closeLimit, int32_t openZero, bool closePositive) {
   (void)closePositive;   // targets are absolute positions
   closeLimitPos = closeLimit; openZeroPos = openZero;
 }
+
+void servoSetOffset(int32_t offset) {
+  portENTER_CRITICAL(&mux);
+  snap.fb.position += offset - posOffset;      // keep the snapshot consistent until the next poll
+  posOffset = offset;
+  portEXIT_CRITICAL(&mux);
+}
+int32_t servoGetOffset() { return posOffset; }

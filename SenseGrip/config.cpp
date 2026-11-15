@@ -4,7 +4,7 @@
 #include <math.h>
 
 namespace {
-constexpr uint8_t CFG_VERSION = 5;   // 3: + fsrEnabled; 4: older limits invalidated; 5: + FSR filter
+constexpr uint8_t CFG_VERSION = 6;   // 3: + fsrEnabled; 4: older limits invalidated; 5: + FSR filter; 6: + touchRef
 // Limits saved before v4 were taken while the servo's position count could be reset by a
 // mode write (hardware-observed), so they may not match the jaw: v1..v3 blobs load with
 // limitsValid = false. (v2 builds saved speeds up to 3400; clampConfig brings them to <= 61.)
@@ -38,9 +38,11 @@ bool loadNew(GripConfig& out, bool& upgraded) {
   // stored = blob length on flash; keep = meaningful prefix copied over the defaults
   // (older blobs end in padding that must not overwrite newer fields).
   const size_t stored = ver == CFG_VERSION ? sizeof(GripConfig)
+                      : ver == 5 ? GRIP_CONFIG_V5_BLOB_SIZE
                       : (ver == 3 || ver == 4) ? GRIP_CONFIG_V4_BLOB_SIZE
                       : (ver == 1 || ver == 2) ? GRIP_CONFIG_V2_SIZE : 0;
   const size_t keep = ver == CFG_VERSION ? sizeof(GripConfig)
+                    : ver == 5 ? GRIP_CONFIG_V5_SIZE
                     : (ver == 3 || ver == 4) ? GRIP_CONFIG_V4_SIZE : GRIP_CONFIG_V2_SIZE;
   if (stored && len == stored && stored <= sizeof(GripConfig) + 8) {
     GripConfig tmp = defaultConfig();          // fields missing from older blobs keep defaults

@@ -26,6 +26,9 @@ struct GripConfig {
   uint8_t fsrFilterWindow;                              // 2..20 (median uses odd 3..9)
   float fsrFilterAlpha;                                 // EMA 0.05..1.0
   float fsrKalmanQ, fsrKalmanR;                         // 1e-5..10
+  // v6: homing touch reference (logical position where the fingertips touch).
+  int32_t touchRef;
+  bool touchValid;
 };
 
 GripConfig defaultConfig();
@@ -36,6 +39,10 @@ constexpr unsigned GRIP_CONFIG_V2_SIZE = __builtin_offsetof(GripConfig, fsrEnabl
 constexpr unsigned GRIP_CONFIG_V4_SIZE = __builtin_offsetof(GripConfig, fsrFilter);
 constexpr unsigned GRIP_CONFIG_V4_BLOB_SIZE =
     (GRIP_CONFIG_V4_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
+// Version 5 held the fields before touchRef; its stored blob was padded to the struct alignment.
+constexpr unsigned GRIP_CONFIG_V5_SIZE = __builtin_offsetof(GripConfig, touchRef);
+constexpr unsigned GRIP_CONFIG_V5_BLOB_SIZE =
+    (GRIP_CONFIG_V5_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
 // The FSR filter settings as FilterParams.
 FilterParams filterParamsOf(const GripConfig& c);
 // Clamps every field into range; returns true if anything changed.

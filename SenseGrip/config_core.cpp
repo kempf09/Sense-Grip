@@ -17,6 +17,7 @@ GripConfig defaultConfig() {
   for (auto& m : c.tofMask) m = ~0ULL;
   c.fsrEnabled = 0x3F;
   c.fsrFilter = 2; c.fsrFilterWindow = 5; c.fsrFilterAlpha = 0.3f; c.fsrKalmanQ = 0.01f; c.fsrKalmanR = 0.05f;
+  c.touchRef = 0; c.touchValid = false;
   return c;
 }
 
