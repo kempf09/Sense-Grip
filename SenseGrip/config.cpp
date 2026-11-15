@@ -1,4 +1,5 @@
 #include "config.h"
+#include <string.h>
 #include <Preferences.h>
 #include <math.h>
 
@@ -34,12 +35,18 @@ bool loadNew(GripConfig& out, bool& upgraded) {
   bool ok = false;
   const uint8_t ver = p.getUChar("ver", 0);
   const size_t len = p.getBytesLength("cfg");
-  const size_t want = ver == CFG_VERSION ? sizeof(GripConfig)
-                    : (ver == 3 || ver == 4) ? GRIP_CONFIG_V4_SIZE
-                    : (ver == 1 || ver == 2) ? GRIP_CONFIG_V2_SIZE : 0;
-  if (want && len == want) {
+  // stored = blob length on flash; keep = meaningful prefix copied over the defaults
+  // (older blobs end in padding that must not overwrite newer fields).
+  const size_t stored = ver == CFG_VERSION ? sizeof(GripConfig)
+                      : (ver == 3 || ver == 4) ? GRIP_CONFIG_V4_BLOB_SIZE
+                      : (ver == 1 || ver == 2) ? GRIP_CONFIG_V2_SIZE : 0;
+  const size_t keep = ver == CFG_VERSION ? sizeof(GripConfig)
+                    : (ver == 3 || ver == 4) ? GRIP_CONFIG_V4_SIZE : GRIP_CONFIG_V2_SIZE;
+  if (stored && len == stored && stored <= sizeof(GripConfig) + 8) {
     GripConfig tmp = defaultConfig();          // fields missing from older blobs keep defaults
-    if (p.getBytes("cfg", &tmp, want) == want) {
+    uint8_t raw[sizeof(GripConfig) + 8];
+    if (p.getBytes("cfg", raw, stored) == stored) {
+      memcpy(&tmp, raw, keep);
       upgraded = ver != CFG_VERSION;
       if (ver <= 3) tmp.limitsValid = false;   // v4+ limits were taken in the stable frame
       out = tmp; ok = true;

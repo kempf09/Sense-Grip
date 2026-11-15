@@ -31,8 +31,11 @@ struct GripConfig {
 GripConfig defaultConfig();
 // Size of the config blob saved by versions 1 and 2 (everything before fsrEnabled).
 constexpr unsigned GRIP_CONFIG_V2_SIZE = __builtin_offsetof(GripConfig, fsrEnabled);
-// Size of the blob saved by versions 3 and 4 (everything before fsrFilter).
+// Versions 3 and 4 hold the fields before fsrFilter (V4_SIZE meaningful bytes); their stored
+// blob was sizeof() of that struct, i.e. padded to the struct alignment (V4_BLOB_SIZE).
 constexpr unsigned GRIP_CONFIG_V4_SIZE = __builtin_offsetof(GripConfig, fsrFilter);
+constexpr unsigned GRIP_CONFIG_V4_BLOB_SIZE =
+    (GRIP_CONFIG_V4_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
 // The FSR filter settings as FilterParams.
 FilterParams filterParamsOf(const GripConfig& c);
 // Clamps every field into range; returns true if anything changed.

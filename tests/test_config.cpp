@@ -70,3 +70,8 @@ TEST(config_filter_params_of) {
   CHECK(p.kind == FilterKind::MEDIAN);
   CHECK_EQ(p.window, (uint8_t)5);
 }
+TEST(config_v4_blob_size_includes_trailing_padding) {
+  // v3/v4 builds saved sizeof(their GripConfig): fields up to fsrEnabled, padded to 8.
+  CHECK_EQ((unsigned)GRIP_CONFIG_V4_BLOB_SIZE, (unsigned)(GRIP_CONFIG_V2_SIZE + 8));
+  CHECK_EQ((unsigned)GRIP_CONFIG_V4_SIZE, (unsigned)(GRIP_CONFIG_V2_SIZE + 1));
+}
