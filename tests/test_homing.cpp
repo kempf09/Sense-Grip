@@ -33,11 +33,24 @@ TEST(stall_rule) {
   CHECK(!stalled(1010, 1000, 400));
 }
 TEST(unstick_only_past_open) {
-  // closePositive: opening side = smaller positions; openZero 2000.
-  CHECK(unstickAllowed(true, 1900, 2000, true, true, false));    // homed, past open
-  CHECK(!unstickAllowed(true, 9000, 2000, true, true, false));   // homed, mid-travel
-  CHECK(!unstickAllowed(false, 0, 2000, true, true, false));     // not homed, fingers visible
-  CHECK(!unstickAllowed(false, 0, 2000, true, false, true));     // not homed, invisible, contact
-  CHECK(unstickAllowed(false, 0, 2000, true, false, false));     // not homed, invisible, no contact
-  CHECK(!unstickAllowed(true, 1900, 2000, true, true, true));    // contact always forbids
+  // closePositive: opening side = smaller positions; openZero 2000. Within the first 300 ms.
+  CHECK(unstickAllowed(true, 1900, 2000, true, true, false, 300));    // homed, past open
+  CHECK(!unstickAllowed(true, 9000, 2000, true, true, false, 300));   // homed, mid-travel
+  CHECK(!unstickAllowed(false, 0, 2000, true, true, false, 300));     // not homed, fingers visible
+  CHECK(!unstickAllowed(false, 0, 2000, true, false, true, 300));     // not homed, invisible, contact
+  CHECK(unstickAllowed(false, 0, 2000, true, false, false, 300));     // not homed, invisible, no contact
+  CHECK(!unstickAllowed(true, 1900, 2000, true, true, true, 300));    // contact always forbids
+}
+TEST(unstick_only_at_the_start) {
+  // A jaw stuck past open does not move at all: the push is only for a stall right at the start.
+  CHECK(unstickAllowed(false, 0, 2000, true, false, false, UNSTICK_START_WINDOW_MS));
+  CHECK(!unstickAllowed(false, 0, 2000, true, false, false, UNSTICK_START_WINDOW_MS + 1));
+}
+TEST(estimate_conflict_ignores_turn_boundaries) {
+  // The estimate is only good to a few hundred counts: a different turn index alone is not a
+  // conflict, a difference of more than half a turn is.
+  CHECK(!estimateConflicts(19202 - 4096 + 5, 19202 - 4096 - 5));      // straddles a boundary
+  CHECK(!estimateConflicts(10000, 10300));
+  CHECK(estimateConflicts(10000, 10000 + 2049));
+  CHECK(estimateConflicts(10000, 10000 - 4096));
 }

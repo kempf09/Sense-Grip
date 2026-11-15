@@ -16,7 +16,7 @@ struct ControlStatus {
   char lastActionMsg[96]; bool lastActionOk;
   uint32_t loopMaxUs;     // longest control-loop iteration in the last 5 s (diagnostics)
   uint32_t posJumps;      // servo position jumps detected since boot
-  bool homed, homing; int32_t homeResidual; char homeMsg[64];
+  bool homed, homing; int32_t homeResidual; char homeMsg[96];
   bool sweeping, sweepLoaded; int32_t sweepN;
   bool estValid; int32_t estPos, estTurn;   // SEN0628 power-up estimate (only before homing)
   uint32_t fsrSampleUsMax; // longest FSR sample pass in the last 5 s (spec: reduce oversampling if > 4 ms)

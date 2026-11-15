@@ -26,5 +26,9 @@ float openingAt(const SweepModel& m, const SweepSample* s, int32_t pos);
 PosEstimate estimatePosition(const SweepModel& m, const SweepSample* s, const uint16_t frame[3][64], uint8_t frameValid);
 // True when the live frame disagrees with the sample nearest pos by more than thresholdMm (RMS
 // over finger zones); false (suspended) when fewer than 6 zones can be compared.
+// Something besides the fingers is in view: >= 3 non-finger zones read at least 50 mm closer than
+// the sweep recorded at this position (or read a target where the sweep saw none). The position
+// check is suspended then, since such an object can also cover finger zones.
+bool  viewObstructed(const SweepModel& m, const SweepSample* s, int32_t pos, const uint16_t frame[3][64], uint8_t frameValid);
 bool  positionMismatch(const SweepModel& m, const SweepSample* s, int32_t pos, const uint16_t frame[3][64],
                        uint8_t frameValid, float thresholdMm);

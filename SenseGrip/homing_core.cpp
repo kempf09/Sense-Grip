@@ -22,8 +22,13 @@ bool stalled(int32_t pos, int32_t windowStartPos, uint32_t windowAgeMs) {
 }
 
 bool unstickAllowed(bool homed, int32_t pos, int32_t openZero, bool closePositive,
-                    bool fingersVisible, bool anyFsrContact) {
-  if (anyFsrContact) return false;
+                    bool fingersVisible, bool anyFsrContact, uint32_t msSinceStart) {
+  if (anyFsrContact || msSinceStart > UNSTICK_START_WINDOW_MS) return false;
   if (homed) return closePositive ? pos <= openZero : pos >= openZero;
   return !fingersVisible;
+}
+
+bool estimateConflicts(int32_t estimatePos, int32_t homedPos) {
+  const int32_t d = estimatePos - homedPos;
+  return d > COUNTS_PER_TURN / 2 || d < -COUNTS_PER_TURN / 2;
 }

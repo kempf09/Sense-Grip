@@ -10,6 +10,7 @@
 #include "shared.h"
 #include "tof.h"
 #include "homing_core.h"
+#include "pins.h"
 #include "sweep_store.h"
 
 static QueueHandle_t gQueue = nullptr;
@@ -67,7 +68,7 @@ struct Ctl {
   bool homeUnstickUsed = false, homeUnstickActive = false;
   uint8_t homeContact = 0; uint32_t homeFsrSeq = 0;
   int32_t homeResidual = 0;
-  char homeMsg[64] = "not homed since power-up";
+  char homeMsg[96] = "not homed since power-up";
   bool pendingOpen = false;
   bool openZeroSetThisBoot = false;
   // Calibration sweep (spec §6.3)
@@ -126,7 +127,7 @@ bool jogPastLimit(const GripConfig& g, int16_t speed, int32_t pos) {
 
 // ---- Homing (close-to-touch), spec §6.2 ----
 constexpr uint16_t HOME_SPEED = 5, HOME_CURRENT = 120, UNSTICK_CURRENT = 415;
-constexpr uint32_t HOME_TIMEOUT_MS = 60000, UNSTICK_MS = 500, HOME_STEP_MS = 200;
+constexpr uint32_t HOME_TIMEOUT_MS = 120000, UNSTICK_MS = 500, HOME_STEP_MS = 200;
 constexpr int32_t HOME_MAX_RESIDUAL = 600;
 const uint8_t DISTAL_FSR[3] = {5, 3, 4};               // FINGER_FSR_MAP[f][0]
 
@@ -147,7 +148,11 @@ bool fingersVisibleNow(Ctl&) {
   if (!sweepLoaded()) return true;
   uint16_t frame[3][64];
   const uint8_t valid = currentFrame(frame);
+  if (valid != 0x7) return true;                         // a sensor offline: cannot tell, deny the push
   const SweepModel& m = sweepModel();
+  int zones = 0;
+  for (int s = 0; s < 3; s++) for (int z = 0; z < 64; z++) if ((m.fingerZones[s] >> z) & 1) zones++;
+  if (zones < 6) return true;                            // model too thin to tell
   int n = 0;
   for (int s = 0; s < 3; s++) {
     if (!((valid >> s) & 1)) continue;
@@ -160,7 +165,7 @@ bool fingersVisibleNow(Ctl&) {
 // The estimate taken when Home started points to a different turn than the homed frame implies.
 bool estimateDisagrees(Ctl& c, int32_t posOffset) {
   if (!c.estAtHome.valid) return false;
-  return turnOf(c.estAtHome.pos, c.cfg.touchRef) != turnOf(c.estRawAtHome + posOffset, c.cfg.touchRef);
+  return estimateConflicts(c.estAtHome.pos, c.estRawAtHome + posOffset);
 }
 
 bool distalTouching(const Ctl& c, const FsrSnapshot& fs) {
@@ -191,7 +196,7 @@ void homeFinish(Ctl& c) {
   const HomeResult r = homeResolve(sv.rawPosition, c.cfg.touchRef, HOME_MAX_RESIDUAL);
   c.homeResidual = r.residual;
   if (!r.ok) { homeStop(c, false, "failed: residual %ld counts (limit %ld) - object in the gripper?", (long)r.residual, (long)HOME_MAX_RESIDUAL); return; }
-  if (estimateDisagrees(c, r.posOffset)) { homeStop(c, false, "failed: SEN0628 estimate disagrees with the touch turn"); return; }
+  if (estimateDisagrees(c, r.posOffset)) { homeStop(c, false, "failed: SEN0628 estimate is more than half a turn away"); return; }
   servoStop();
   servoSetOffset(r.posOffset);
   c.havePos = false;                                     // new frame: new jump-guard baseline
@@ -206,13 +211,19 @@ void homeStart(Ctl& c, const ServoSnapshot& sv, uint32_t now) {
   if (c.fsm.armed()) { say(c, false, "Home: disarm first"); return; }
   if (!sv.online || !sv.modeKnown || sv.mode != 0) { say(c, false, "Home refused: servo offline or not in position mode 0"); return; }
   if (!c.cfg.touchValid) { say(c, false, "Home refused: no touch reference yet - run the calibration sweep first"); return; }
+  c.estAtHome = c.est; c.estRawAtHome = c.estRaw;       // snapshot before anything moves
+  c.homed = false;
   const FsrSnapshot fs = fsrGet();
-  if (distalTouching(c, fs)) { homeFinish(c); return; }    // already closed: resolve without moving
+  bool proximal = false;
+  for (uint8_t f = 0; f < 3; f++) {
+    const uint8_t i = FINGER_FSR_MAP[f][1];
+    if ((c.cfg.fsrEnabled & (1u << i)) && fs.force[i] == fs.force[i] && fs.force[i] >= c.cfg.contactForceN) proximal = true;
+  }
+  if (proximal) { say(c, false, "Home refused: a base (proximal) pad shows contact - empty the gripper"); return; }
+  if (distalTouching(c, fs)) { homeFinish(c); return; }    // fingertips already touching: resolve without moving
   if (fs.agg.channelsInContact > 0) { say(c, false, "Home refused: an FSR shows contact - empty the gripper"); return; }
   c.homing = true; c.homeT0 = now; c.homeStepMs = now; c.homeWinMs = now; c.homeWinPos = sv.fb.position;
   c.homeUnstickUsed = false; c.homeUnstickActive = false; c.homeContact = 0; c.homeFsrSeq = fs.seq;
-  c.estAtHome = c.est; c.estRawAtHome = c.estRaw;
-  c.homed = false;
   snprintf(c.homeMsg, sizeof(c.homeMsg), "homing...");
   say(c, true, "Home: closing slowly to fingertip contact");
   homeStep(c, sv, HOME_CURRENT);
@@ -223,7 +234,7 @@ void homeUpdate(Ctl& c, uint32_t now) {
   if (!c.homing) return;
   const ServoSnapshot sv = servoGet();
   if (!sv.online || sv.ageMs > SERVO_FRESH_MS) { homeStop(c, false, "aborted: servo feedback lost"); return; }
-  if ((uint32_t)(now - c.homeT0) >= HOME_TIMEOUT_MS) { homeStop(c, false, "aborted: no fingertip contact within 60 s"); return; }
+  if ((uint32_t)(now - c.homeT0) >= HOME_TIMEOUT_MS) { homeStop(c, false, "aborted: no fingertip contact within 120 s"); return; }
   const FsrSnapshot fs = fsrGet();
   if (fs.seq != c.homeFsrSeq) {                          // count consecutive new FSR samples
     c.homeFsrSeq = fs.seq;
@@ -237,7 +248,7 @@ void homeUpdate(Ctl& c, uint32_t now) {
   else if (stalled(sv.fb.position, c.homeWinPos, now - c.homeWinMs)) {
     const bool contact = fs.agg.channelsInContact > 0;
     if (!c.homeUnstickUsed && unstickAllowed(c.homed, sv.fb.position, c.cfg.openZero, c.cfg.closePositive,
-                                             fingersVisibleNow(c), contact)) {
+                                             fingersVisibleNow(c), contact, now - c.homeT0)) {
       c.homeUnstickUsed = true; c.homeUnstickActive = true; c.homeUnstickT0 = now;
       c.homeWinMs = now;
       say(c, true, "Home: jaw stuck past open - one push at maximum current");
@@ -256,7 +267,7 @@ void homeUpdate(Ctl& c, uint32_t now) {
 // ---- Calibration sweep (spec §6.3) ----
 constexpr uint16_t SWEEP_SPEED = 5, SWEEP_CURRENT = 120;
 constexpr int32_t SWEEP_STEP = 100;
-constexpr uint32_t SWEEP_TIMEOUT_MS = 180000, SWEEP_FRAME_WAIT_MS = 1000, SWEEP_MOVE_WAIT_MS = 5000;
+constexpr uint32_t SWEEP_TIMEOUT_MS = 400000, SWEEP_FRAME_WAIT_MS = 1000, SWEEP_MOVE_WAIT_MS = 5000;
 enum : uint8_t { SW_TO_OPEN = 0, SW_MOVE, SW_FRAMES };
 
 void sweepStop(Ctl& c, bool ok, const char* why) {
@@ -266,7 +277,7 @@ void sweepStop(Ctl& c, bool ok, const char* why) {
 }
 
 void sweepRecord(Ctl& c, const ServoSnapshot& sv) {
-  SweepSample& s = sweepSamples()[c.swN];
+  SweepSample& s = sweepScratch()[c.swN];               // never the loaded sweep (abort keeps it intact)
   s.pos = sv.fb.position;
   s.valid = currentFrame(s.mm);
   c.swN++;
@@ -277,18 +288,19 @@ void sweepFinish(Ctl& c) {
   c.sweeping = false;
   const ServoSnapshot sv = servoGet();
   const int32_t touch = sv.fb.position;
-  if (!sweepValid(sweepSamples(), c.swN, c.cfg.openZero, c.cfg.closePositive)) {
+  if (!sweepValid(sweepScratch(), c.swN, c.cfg.openZero, c.cfg.closePositive)) {
     say(c, false, "Sweep: not saved - recording invalid (%d samples); previous sweep kept", c.swN);
     return;
   }
-  sweepAnalyze(sweepSamples(), c.swN, c.cal, c.cfg.openZero, touch, c.cfg.closePositive, sweepModel());
-  if (!sweepStoreSave(c.swN)) { say(c, false, "Sweep: could not save /sweep.bin"); sweepStoreBegin(); return; }
+  if (!sweepStoreCommit(c.swN, c.cal, c.cfg.openZero, touch, c.cfg.closePositive)) {
+    say(c, false, "Sweep: could not save /sweep.bin; previous sweep kept"); return;
+  }
   GripConfig n = c.cfg;
   n.touchRef = touch; n.touchValid = true;
   n.closeLimit = touch - (n.closePositive ? 1 : -1) * 100;
   n.limitsValid = true;
   if (limitsProblem(n)) n.limitsValid = false;
-  configSave(n);
+  if (!configSave(n)) say(c, false, "Sweep: saved the sweep but could not save the touch reference");
   c.cfg = n;
   applyConfig(c);
   c.homed = true;                                        // the sweep defines the logical frame
@@ -299,10 +311,11 @@ void sweepFinish(Ctl& c) {
 
 void sweepStart(Ctl& c, const ServoSnapshot& sv, uint32_t now) {
   if (c.fsm.armed()) { say(c, false, "Sweep: disarm first"); return; }
-  if (!sweepSamples()) { say(c, false, "Sweep refused: no memory for the sweep buffer"); return; }
+  if (!sweepScratch()) { say(c, false, "Sweep refused: no memory for the sweep buffer"); return; }
   if (!sv.online || !sv.modeKnown || sv.mode != 0) { say(c, false, "Sweep refused: servo offline or not in position mode 0"); return; }
-  if (!c.cfg.limitsValid && !c.openZeroSetThisBoot) { say(c, false, "Sweep refused: set OPEN zero first"); return; }
-  if (!c.homed && c.cfg.touchValid) { say(c, false, "Sweep refused: press Home first"); return; }
+  // OPEN zero must be valid in the current frame: homed this boot, or set this boot (first-time
+  // setup, or re-calibration after Home cannot succeed). A limit from another boot may be turns off.
+  if (!c.homed && !c.openZeroSetThisBoot) { say(c, false, "Sweep refused: press Home, or jog to fully open and Set OPEN zero first"); return; }
   if (fsrGet().agg.channelsInContact > 0) { say(c, false, "Sweep refused: an FSR shows contact - empty the gripper"); return; }
   c.sweeping = true; c.swPhase = SW_TO_OPEN; c.swT0 = now; c.swPhaseMs = now; c.swN = 0; c.swContact = 0;
   c.swFsrSeq = fsrGet().seq;
@@ -317,6 +330,7 @@ void sweepUpdate(Ctl& c, uint32_t now) {
   if ((uint32_t)(now - c.swT0) >= SWEEP_TIMEOUT_MS) { sweepStop(c, false, "aborted: timeout"); return; }
   if (c.swN >= SWEEP_MAX) { sweepStop(c, false, "aborted: too many samples (touch not reached)"); return; }
   const FsrSnapshot fs = fsrGet();
+  if (c.swPhase == SW_TO_OPEN && fs.agg.channelsInContact > 0) { sweepStop(c, false, "aborted: FSR contact while moving to OPEN"); return; }
   if (c.swPhase != SW_TO_OPEN && fs.seq != c.swFsrSeq) {
     c.swFsrSeq = fs.seq;
     c.swContact = distalTouching(c, fs) ? (uint8_t)(c.swContact + 1) : 0;
@@ -385,7 +399,8 @@ void checkUpdate(Ctl& c, uint32_t now) {
   }
   uint16_t frame[3][64];
   const uint8_t valid = currentFrame(frame);
-  if (!positionMismatch(sweepModel(), sweepSamples(), sv.fb.position, frame, valid, 25.0f)) { c.mismatching = false; return; }
+  if (viewObstructed(sweepModel(), sweepSamples(), sv.fb.position, frame, valid) ||
+      !positionMismatch(sweepModel(), sweepSamples(), sv.fb.position, frame, valid, 25.0f)) { c.mismatching = false; return; }
   if (!c.mismatching) { c.mismatching = true; c.mismatchSinceMs = now; return; }
   if ((uint32_t)(now - c.mismatchSinceMs) > 1000) {
     c.mismatching = false;
@@ -521,6 +536,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       applyConfig(c);
       c.fsm.invalidateOpened();
       c.havePos = false;                   // the count may reset: take a new baseline
+      c.homed = false;
       say(c, true, "servo in position mode 0 (saved); limits cleared - jog, set OPEN zero and close limit again");
       return;
     }
@@ -529,9 +545,12 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       if (c.fsm.armed()) { say(c, false, "disarm before calibrating"); return; }
       if (!sv.online) { say(c, false, "calibrate middle refused: servo offline"); return; }
       if (!servoCalibrateMiddle()) { say(c, false, "calibrate middle failed: %s", servoGet().lastError); return; }
-      // Every position the servo reports has shifted: saved limits no longer match the jaw.
+      // Every position the servo reports has shifted: saved limits and the touch reference no
+      // longer match the jaw (a new calibration sweep is needed).
       GripConfig n = c.cfg;
       n.limitsValid = false;
+      n.touchValid = false;
+      c.homed = false;
       configSave(n);
       c.cfg = n;
       applyConfig(c);
@@ -627,7 +646,7 @@ void checkPositionJump(Ctl& c, uint32_t now) {
   if (c.havePos) {
     const int32_t d = pos - c.lastPos;
     const State st = c.fsm.state();
-    const bool commanded = c.jogActive || (st != State::IDLE && st != State::FAULT);
+    const bool commanded = c.jogActive || c.homing || c.sweeping || (st != State::IDLE && st != State::FAULT);
     const uint32_t dt = (uint32_t)(now - c.lastPosMs);
     const int64_t allowed = commanded ? 400 + (int64_t)dt * 32 / 10 : 400;
     if (d > allowed || d < -allowed) {
@@ -703,9 +722,9 @@ void retryBootStop(Ctl& c) {
 void controlTask(void*) {
   Ctl* c = new Ctl(configLoad());
   applyConfig(*c);                     // no motion at boot
+  bootStop(*c);                        // stop a still-running servo before anything slow
   tofCalibLoad(c->cal);                // SEN0628 calibration saved by the 3.0.3 3D page
-  sweepStoreBegin();                   // LittleFS + /sweep.bin (if any)
-  bootStop(*c);
+  sweepStoreBegin();                   // LittleFS (may format on first use) + /sweep.bin
   // Mode/phase are read on the first iteration so Open is not refused for the first second.
   uint32_t lastServo = 0, lastFsr = 0, lastMode = 0;
   bool modeRead = false;

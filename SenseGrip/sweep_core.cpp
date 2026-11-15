@@ -139,12 +139,35 @@ PosEstimate estimatePosition(const SweepModel& m, const SweepSample* s, const ui
   return e;
 }
 
-bool positionMismatch(const SweepModel& m, const SweepSample* s, int32_t pos, const uint16_t frame[3][64],
-                      uint8_t frameValid, float thresholdMm) {
-  if (m.n <= 0) return false;
+namespace {
+int nearestSample(const SweepModel& m, const SweepSample* s, int32_t pos) {
   int near = 0;
   for (int i = 1; i < m.n; i++)
     if (std::labs((long)s[i].pos - pos) < std::labs((long)s[near].pos - pos)) near = i;
+  return near;
+}
+}  // namespace
+
+bool viewObstructed(const SweepModel& m, const SweepSample* s, int32_t pos, const uint16_t frame[3][64], uint8_t frameValid) {
+  if (m.n <= 0) return false;
+  const SweepSample& ref = s[nearestSample(m, s, pos)];
+  int closer = 0;
+  for (int sn = 0; sn < 3; sn++) {
+    if (!((frameValid >> sn) & 1) || !((ref.valid >> sn) & 1)) continue;
+    for (int z = 0; z < 64; z++) {
+      if ((m.fingerZones[sn] >> z) & 1) continue;
+      const uint16_t f = frame[sn][z], r = ref.mm[sn][z];
+      if (!ok(f)) continue;
+      if (!ok(r) || (float)f < (float)r - 50.0f) closer++;
+    }
+  }
+  return closer >= 3;
+}
+
+bool positionMismatch(const SweepModel& m, const SweepSample* s, int32_t pos, const uint16_t frame[3][64],
+                      uint8_t frameValid, float thresholdMm) {
+  if (m.n <= 0) return false;
+  const int near = nearestSample(m, s, pos);
   float mean;
   if (compare(m, frame, frameValid, s[near].mm, s[near].valid, mean) < MIN_COMPARED) return false;
   return mean > thresholdMm;

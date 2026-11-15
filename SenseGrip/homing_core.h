@@ -16,5 +16,12 @@ bool stalled(int32_t pos, int32_t windowStartPos, uint32_t windowAgeMs);
 // The maximum-current push is only for a jaw stuck past OPEN, never near closed and never with
 // an FSR in contact: homed and at/beyond OPEN zero (opening side), or not homed and the
 // SEN0628 cannot see the fingers (open region).
+// A jaw stuck past OPEN does not move at all, so the push is only for a stall right at the start
+// (msSinceStart <= UNSTICK_START_WINDOW_MS: one 300 ms stall window plus the first step).
+constexpr uint32_t UNSTICK_START_WINDOW_MS = 800;
 bool unstickAllowed(bool homed, int32_t pos, int32_t openZero, bool closePositive,
-                    bool fingersVisible, bool anyFsrContact);
+                    bool fingersVisible, bool anyFsrContact, uint32_t msSinceStart);
+// The SEN0628 estimate is good to a few hundred counts: it conflicts with the homed frame only
+// when the two positions differ by more than half a turn (a different turn index alone is not
+// a conflict near a turn boundary).
+bool estimateConflicts(int32_t estimatePos, int32_t homedPos);

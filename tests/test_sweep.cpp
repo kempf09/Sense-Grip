@@ -73,3 +73,12 @@ TEST(sweep_rejects_non_monotonic_or_short) {
   CHECK(!sweepValid(b.data(), N, 2000, true));
   CHECK(!sweepValid(v.data(), N, 1600, true));       // first sample 400 counts from openZero
 }
+
+TEST(view_obstructed_by_something_besides_fingers) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  uint16_t frame[3][64];
+  std::memcpy(frame, v[150].mm, sizeof(frame));
+  CHECK(!viewObstructed(m, v.data(), v[150].pos, frame, 0x7));
+  for (int z : {30, 31, 38}) frame[1][z] = 300;        // something at 300 mm in background zones
+  CHECK(viewObstructed(m, v.data(), v[150].pos, frame, 0x7));
+}
