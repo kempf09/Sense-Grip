@@ -39,11 +39,33 @@ Board = ESP32S3 Dev Module, PSRAM = OPI PSRAM, Flash Size = 32 MB, Partition Sch
    servo ID stays at the saved value (default 1). There are no ID or baud fields. Scan blocks the
    controller (and the software E-stop) for up to about 0.6 s: only scan with the gripper idle and clear.
 4. Jog the fingers to fully open, press **Set OPEN zero here**.
-5. Jog to fully closed, press **Set close limit here**.
-6. Press **Open**. The gripper goes to the OPEN zero and sits in IDLE. Open is refused while any servo blocker shows, including "Full angle: NO" (see "Why won't it arm?").
-   Press Open again after jogging or setting limits: arming needs the jaw to have reached OPEN since then.
-7. FSR tab: calibrate each channel, then Zero each one with nothing touching it.
-8. Press **Arm**. Bring an object within the detect distance and it closes.
+5. **Run calibration sweep** (Servo tab, gripper empty, nothing in the SEN0628 view). It goes to
+   OPEN zero, closes slowly in 100-count steps recording all three SEN0628 at each step, and stops
+   when a fingertip FSR shows the tips touching. That point is the **touch reference**; the close
+   limit is set 100 counts before it. The sweep is saved to the ESP32's flash (`/sweep.bin`,
+   LittleFS) only if it completes; it then opens. Run it again after mechanical changes.
+6. FSR tab: calibrate each channel, then Zero each one with nothing touching it.
+7. Press **Arm**. Bring an object within the detect distance and it closes.
+
+### Every power-up after that: Home
+
+The servo keeps its angle within one turn but loses the turn count at power-up, so after every
+power-up (and every ESP32 restart) the dashboard shows **NOT HOMED** and refuses Open and Arm.
+Empty the gripper and press **Home** (Combined or Servo tab): the fingers close slowly (speed 5,
+low current) until a fingertip FSR shows the tips touching, the firmware picks the turn that puts
+that point nearest the touch reference, and the gripper opens. Home fails, without moving
+further, if the touch point is more than 600 counts from the reference (an object in the gripper?),
+if the jaw stops without fingertip contact, or if the SEN0628 estimate points to a different turn.
+A maximum-current push (2.7 A, at most 0.5 s, once) is used only for a jaw stuck past the open
+position, never near closed.
+
+- **SEN0628 estimate:** before Home, the Servo tab shows which turn the sensors think the fingers
+  are on (none within ~1000 counts of open, where the fingers are not visible).
+- **Running check:** while homed and idle (or holding), past the first 1000 counts and with no
+  object in view, the live SEN0628 view is compared with the stored sweep at the current position.
+  A mismatch for more than 1 s sets NOT HOMED ("position check failed - press Home").
+- **Opening plot:** the Servo tab plots fingertip opening (mm from the axis) against motor
+  position from the stored sweep; finger zones are outlined on the SEN0628 heatmaps.
 
 Notes:
 
@@ -150,6 +172,7 @@ The dashboard lists every blocker. Arm is refused while any is present.
 | `servo multi-turn (full-angle) feedback off` | The firmware cannot change this. Set the CF35-12 to multi-turn / full-angle mode with the Waveshare servo configuration tool (the bit reads as register 18 bit 4), then power-cycle the servo. The old firmware needed the same setting, so a servo that worked with it is already set. The Servo tab shows "Full angle: NO" when it is off. Open is refused for this reason too. |
 | `OPEN zero / close limit not set` | Do first-boot steps 4 and 5. |
 | `close limit is not on the closing side of OPEN zero` | Set the limits again with the fingers jogged the right way round. |
+| `not homed — press Home (gripper must be empty)` | Empty the gripper and press Home. First time: run the calibration sweep instead. |
 | `not at OPEN — press Open (after power-up, jog, new limits)` | Press Open. Needed after power-up, after every FAULT, after jogging, after setting OPEN zero or close limit, and after changing "Close = positive". |
 | `servo in mode N, not position mode 0 — ...` | Servo tab: Set position mode (0), then set the limits again. If it comes back after a servo power-cycle, the mode is not being saved: report it. |
 | `FSR n not calibrated` | Calibrate channel n on the FSR tab. |
@@ -174,6 +197,9 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/setOpen` | Save current position as OPEN zero |
 | `/api/servo/setClose` | Save current position as close limit |
 | `/api/servo/scan` | Find servo baud rate |
+| `/api/servo/home` | Home: close to fingertip touch, set the position frame, open |
+| `/api/servo/sweep` | Run the calibration sweep |
+| GET `/api/sweep` | Stored sweep: positions, fingertip opening, finger zones |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
 | `/api/servo/positionMode` | Torque off, servo mode 0 saved in EEPROM (clears limits) |
 | `/api/servo/calibrateMiddle` | Servo middle calibration at the present position (clears limits) |
@@ -198,6 +224,10 @@ Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 
 - `servo.*` servo commands over UART
 - `fsr_math.*` FSR force and contact maths (pure)
 - `fsr_filter.*` FSR filters and their delay (pure)
+- `tof_geometry.*` SEN0628 zone geometry, ported from the 3.0.3 3D page (pure)
+- `homing_core.*` turn resolution, stall and unstick rules (pure)
+- `sweep_core.*` finger zones, opening table, position estimate and check (pure)
+- `sweep_store.*` sweep file (LittleFS) and SEN0628 calibration (NVS `senCal2`)
 - `fsr.*` FSR ADC reading (100 Hz), filtering and calibration storage
 - `tof_detect.*` object-present detection (pure)
 - `tof.*` ToF sensor reading
@@ -211,5 +241,5 @@ Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 
 make -C tests
 ```
 
-Builds and runs the pure files (`*_core`, `*_math`, `*_proto`, `*_detect`, `*_util`, `*_filter`) with g++ on
+Builds and runs the pure files (`*_core`, `*_math`, `*_proto`, `*_detect`, `*_util`, `*_filter`, `*_geometry`) with g++ on
 your computer. No board needed. Hardware checks: `docs/HARDWARE_CHECKLIST.md`.

@@ -43,3 +43,13 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 17. **FSR sample time at 100 Hz.** FSR tab (Filter panel) or SEN0628 tab: "FSR sample pass max"
     must stay at or below 4 ms, and the control loop max below 10 ms. If the pass is above 4 ms,
     report it: the FSR oversampling is then reduced from 16 to 8.
+18. **First calibration sweep.** Gripper empty, nothing in view. Jog to fully open, Set OPEN zero,
+    Run calibration sweep. Note the touch position it reports and check the opening plot falls
+    from ~170 mm at OPEN towards the touch point; finger zones should be outlined on the heatmaps.
+19. **Home after power cycles.** Three times, from different finger positions: power-cycle the
+    servo (and ESP32), press Home. Note the residual each time; the fingers must end at OPEN.
+20. **Home with an object** between the fingers must fail ("residual ... object in the gripper?")
+    without opening past OPEN.
+21. **ESP32 restart only** (servo stays powered): the dashboard shows NOT HOMED; Home works.
+22. **Jump guard:** with the ESP32 on, power-cycle only the servo → NOT HOMED appears.
+23. **Running check:** homed, idle, hold an object in the SEN0628 view → no "position check failed".
