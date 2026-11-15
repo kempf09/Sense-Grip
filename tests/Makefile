@@ -1,6 +1,6 @@
 CXX ?= g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -I../SenseGrip -I.
-PURE = $(wildcard ../SenseGrip/*_core.cpp ../SenseGrip/*_math.cpp ../SenseGrip/*_proto.cpp ../SenseGrip/*_detect.cpp ../SenseGrip/*_util.cpp ../SenseGrip/*_filter.cpp)
+PURE = $(wildcard ../SenseGrip/*_core.cpp ../SenseGrip/*_math.cpp ../SenseGrip/*_proto.cpp ../SenseGrip/*_detect.cpp ../SenseGrip/*_util.cpp ../SenseGrip/*_filter.cpp ../SenseGrip/*_geometry.cpp)
 TESTS = $(wildcard test_*.cpp)
 
 .PHONY: all test clean
