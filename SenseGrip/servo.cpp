@@ -69,7 +69,9 @@ bool transact(uint8_t instr, const uint8_t* params, uint8_t n, uint8_t& status,
   while ((uint32_t)(micros() - start) < REPLY_TIMEOUT_US) {
     bool got = false;
     while (Bus.available() && have < RX_CAP) { rx[have++] = (uint8_t)Bus.read(); got = true; }
-    if (!got) { taskYIELD(); continue; }
+    // Sleep (not taskYIELD): a yield never lets lower-priority tasks run, so a servo that
+    // stops answering would starve the SEN0628 task for the whole 25 ms timeout.
+    if (!got) { vTaskDelay(1); continue; }
     for (;;) {
       const uint8_t* d = nullptr; uint8_t dn = 0, st = 0; size_t used = 0;
       SvParse r = svParseReply(rx, have, servoId, st, d, dn, used);
