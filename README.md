@@ -90,6 +90,13 @@ jaw cannot be back-driven), the limits are cleared, Open is required again, and 
   moving), plus the control loop's longest iteration and servo bus errors. Note these after a
   dropout: they tell wiring/EMI (dropouts while moving) from timing (long reads, slow loop).
 - **Clear limits** (Servo tab) forgets OPEN zero and close limit so you can set them again.
+- **FSR filtering** (FSR tab, Filter panel). FSRs are sampled at 100 Hz; one filter applies to all
+  six channels: none, moving average (N 2-20), median (N 3/5/7/9), exponential (alpha 0.05-1) or a
+  1-D Kalman filter (Q, R). Default: median, N = 5. The panel shows the filter's delay
+  (moving average / median: (N-1)/2 x 10 ms; EMA: (1-alpha)/alpha x 10 ms; Kalman: from its
+  steady-state gain) and a live 10 s chart of raw vs filtered force for one channel (the chart is
+  drawn from the 5 Hz status poll). The FSM, contact detection and grasp force use the filtered
+  value; the **force limit uses the higher of raw and filtered**, so filtering never delays it.
 - FSR tab: untick **Used** on a channel to make the FSM ignore it (not needed for arming, never
   counts as contact or grasp force, ignored by the force limit). Readings are still shown.
   The Servo tab has its own E-STOP button, always enabled.
@@ -175,6 +182,10 @@ All under the dashboard host. POST unless noted.
 | `/api/fsm/estop` | Emergency stop, FAULT |
 | `/api/fsm/reset` | Clear FAULT |
 
+`/api/status` → `fsr` contains `force` (filtered), `forceRaw`, `filterDelayMs` and `limitForce`.
+Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 2 median, 3 EMA,
+4 Kalman), `fsrFilterWindow`, `fsrFilterAlpha`, `fsrKalmanQ`, `fsrKalmanR`.
+
 ## Code map (`SenseGrip/`)
 
 - `SenseGrip.ino` setup: Wi-Fi AP, starts tasks
@@ -186,7 +197,8 @@ All under the dashboard host. POST unless noted.
 - `servo_proto.*` servo packet encode/decode (pure)
 - `servo.*` servo commands over UART
 - `fsr_math.*` FSR force and contact maths (pure)
-- `fsr.*` FSR ADC reading and calibration storage
+- `fsr_filter.*` FSR filters and their delay (pure)
+- `fsr.*` FSR ADC reading (100 Hz), filtering and calibration storage
 - `tof_detect.*` object-present detection (pure)
 - `tof.*` ToF sensor reading
 - `json_util.*` small JSON helpers (pure)
@@ -199,5 +211,5 @@ All under the dashboard host. POST unless noted.
 make -C tests
 ```
 
-Builds and runs the pure files (`*_core`, `*_math`, `*_proto`, `*_detect`, `*_util`) with g++ on
+Builds and runs the pure files (`*_core`, `*_math`, `*_proto`, `*_detect`, `*_util`, `*_filter`) with g++ on
 your computer. No board needed. Hardware checks: `docs/HARDWARE_CHECKLIST.md`.

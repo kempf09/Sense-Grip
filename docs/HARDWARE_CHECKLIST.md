@@ -37,3 +37,8 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 15. **SEN0628 dropouts.** Leave the gripper idle for 2 minutes, then jog for 2 minutes. Note on the
     SEN0628 tab for each sensor: dropouts (moving), max read ms, init fails (stage), plus control
     loop max and servo bus errors. Report these numbers.
+16. **FSR filters.** FSR tab, pick a pad in the chart. Press it by hand and tap it sharply: compare
+    raw (grey) and filtered (blue) for each filter, and note the delay readout. With the median
+    filter on, a sharp press above the force limit must still trip the FAULT.
+17. **Loop time at 100 Hz.** SEN0628 tab: the control loop max should stay below 10 ms; if not,
+    report it (the FSR oversampling can be reduced from 16 to 8).
