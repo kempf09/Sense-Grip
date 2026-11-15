@@ -56,8 +56,14 @@ low current) until a fingertip FSR shows the tips touching, the firmware picks t
 that point nearest the touch reference, and the gripper opens. Home fails, without moving
 further, if the touch point is more than 600 counts from the reference (an object in the gripper?),
 if the jaw stops without fingertip contact, or if the SEN0628 estimate points to a different turn.
-A maximum-current push (2.7 A, at most 0.5 s, once) is used only for a jaw stuck past the open
-position, never near closed.
+A maximum-current push (2.7 A, at most 0.5 s, once, only in the first 0.8 s of Home and only when
+all three SEN0628 are online and see no fingers) is used only for a jaw stuck past the open
+position, never near closed. Home gives up after 120 s (full travel at speed 5 takes ~80 s).
+
+**If Home keeps failing** (pads changed, mechanics changed, after Calibrate servo middle): jog to
+fully open, press Set OPEN zero, and run the calibration sweep again. The sweep is only allowed
+after Home or after Set OPEN zero in the same power-up, so it never uses an OPEN zero from an
+earlier power-up.
 
 - **SEN0628 estimate:** before Home, the Servo tab shows which turn the sensors think the fingers
   are on (none within ~1000 counts of open, where the fingers are not visible).
