@@ -228,6 +228,7 @@ static const Field FIELDS[] = {
   F_(detectMm, T_U16), F_(detectHoldMs, T_U16),
   F_(preTouchTimeoutMs, T_U32), F_(graspTimeoutMs, T_U32), F_(openTimeoutMs, T_U32),
   F_(fsrEnabled, T_U8),
+  F_(fsrFilter, T_U8), F_(fsrFilterWindow, T_U8), F_(fsrFilterAlpha, T_F), F_(fsrKalmanQ, T_F), F_(fsrKalmanR, T_F),
   { "tofMask0", T_MASK, offsetof(GripConfig, tofMask), 0 },
   { "tofMask1", T_MASK, offsetof(GripConfig, tofMask), 1 },
   { "tofMask2", T_MASK, offsetof(GripConfig, tofMask), 2 },

@@ -16,6 +16,7 @@ GripConfig defaultConfig() {
   c.runViaPosition = false;
   for (auto& m : c.tofMask) m = ~0ULL;
   c.fsrEnabled = 0x3F;
+  c.fsrFilter = 2; c.fsrFilterWindow = 5; c.fsrFilterAlpha = 0.3f; c.fsrKalmanQ = 0.01f; c.fsrKalmanR = 0.05f;
   return c;
 }
 
@@ -41,6 +42,11 @@ bool clampConfig(GripConfig& c) {
   ch |= clampInt(c.openZero, -32767, 32767);
   ch |= clampInt(c.closeLimit, -32767, 32767);
   if (c.fsrEnabled & ~0x3F) { c.fsrEnabled &= 0x3F; ch = true; }
+  if (c.fsrFilter > 4) { c.fsrFilter = d.fsrFilter; ch = true; }
+  ch |= clampInt(c.fsrFilterWindow, 2, FILTER_MAX_WINDOW);
+  ch |= clampF(c.fsrFilterAlpha, 0.05f, 1.0f, d.fsrFilterAlpha);
+  ch |= clampF(c.fsrKalmanQ, 1e-5f, 10.0f, d.fsrKalmanQ);
+  ch |= clampF(c.fsrKalmanR, 1e-5f, 10.0f, d.fsrKalmanR);
   ch |= clampInt(c.approachSpeed, 1, SPEED_MAX);
   ch |= clampInt(c.graspSpeed, 1, SPEED_MAX);
   ch |= clampInt(c.openSpeed, 1, SPEED_MAX);
@@ -69,3 +75,7 @@ const char* limitsProblem(const GripConfig& c) {
   return nullptr;
 }
 
+
+FilterParams filterParamsOf(const GripConfig& c) {
+  return FilterParams{(FilterKind)c.fsrFilter, c.fsrFilterWindow, c.fsrFilterAlpha, c.fsrKalmanQ, c.fsrKalmanR};
+}

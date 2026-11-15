@@ -1,6 +1,7 @@
 // Gripper configuration: defaults, clamping, limit validation. Pure C++.
 #pragma once
 #include <stdint.h>
+#include "fsr_filter.h"
 
 // Servo speed unit: 0.732 RPM (Waveshare CF library: "V=60*0.732=43.92rpm"); 61 ~ 44.7 RPM max.
 constexpr uint16_t SPEED_MAX = 61;
@@ -19,12 +20,21 @@ struct GripConfig {
   uint32_t preTouchTimeoutMs, graspTimeoutMs, openTimeoutMs; // 500..60000
   bool runViaPosition;
   uint64_t tofMask[3];                                  // bit z = zone z enabled
-  uint8_t fsrEnabled;                                   // bit i = FSR index i used by the FSM (added in v3; keep last)
+  uint8_t fsrEnabled;                                   // bit i = FSR index i used by the FSM (added in v3)
+  // v5: FSR filter (FilterKind as uint8_t). Append new fields below, never above.
+  uint8_t fsrFilter;                                    // 0..4, default 2 (median)
+  uint8_t fsrFilterWindow;                              // 2..20 (median uses odd 3..9)
+  float fsrFilterAlpha;                                 // EMA 0.05..1.0
+  float fsrKalmanQ, fsrKalmanR;                         // 1e-5..10
 };
 
 GripConfig defaultConfig();
 // Size of the config blob saved by versions 1 and 2 (everything before fsrEnabled).
 constexpr unsigned GRIP_CONFIG_V2_SIZE = __builtin_offsetof(GripConfig, fsrEnabled);
+// Size of the blob saved by versions 3 and 4 (everything before fsrFilter).
+constexpr unsigned GRIP_CONFIG_V4_SIZE = __builtin_offsetof(GripConfig, fsrFilter);
+// The FSR filter settings as FilterParams.
+FilterParams filterParamsOf(const GripConfig& c);
 // Clamps every field into range; returns true if anything changed.
 bool clampConfig(GripConfig& c);
 // nullptr if ok, else a human-readable problem.

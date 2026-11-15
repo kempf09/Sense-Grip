@@ -3,7 +3,7 @@
 #include <math.h>
 
 namespace {
-constexpr uint8_t CFG_VERSION = 4;   // 3: + fsrEnabled; 4: same layout, older limits invalidated
+constexpr uint8_t CFG_VERSION = 5;   // 3: + fsrEnabled; 4: older limits invalidated; 5: + FSR filter
 // Limits saved before v4 were taken while the servo's position count could be reset by a
 // mode write (hardware-observed), so they may not match the jaw: v1..v3 blobs load with
 // limitsValid = false. (v2 builds saved speeds up to 3400; clampConfig brings them to <= 61.)
@@ -34,13 +34,14 @@ bool loadNew(GripConfig& out, bool& upgraded) {
   bool ok = false;
   const uint8_t ver = p.getUChar("ver", 0);
   const size_t len = p.getBytesLength("cfg");
-  const size_t want = (ver == CFG_VERSION || ver == 3) ? sizeof(GripConfig)
+  const size_t want = ver == CFG_VERSION ? sizeof(GripConfig)
+                    : (ver == 3 || ver == 4) ? GRIP_CONFIG_V4_SIZE
                     : (ver == 1 || ver == 2) ? GRIP_CONFIG_V2_SIZE : 0;
   if (want && len == want) {
     GripConfig tmp = defaultConfig();          // fields missing from older blobs keep defaults
     if (p.getBytes("cfg", &tmp, want) == want) {
       upgraded = ver != CFG_VERSION;
-      if (upgraded) tmp.limitsValid = false;
+      if (ver <= 3) tmp.limitsValid = false;   // v4+ limits were taken in the stable frame
       out = tmp; ok = true;
     }
   }
