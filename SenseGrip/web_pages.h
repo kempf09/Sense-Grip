@@ -67,11 +67,12 @@ select{width:auto;min-width:150px;display:block}
   <div>
    <div class="panel"><div id="badge">...</div>
     <div id="faultBox"></div>
-    <div class="row"><span class="small">Armed:</span><span id="armed" class="pill off">DISARMED</span><span class="small" id="reason"></span></div></div>
+    <div class="row"><span class="small">Armed:</span><span id="armed" class="pill off">DISARMED</span><span class="small" id="reason"></span></div>
+    <div class="row"><span class="small">Position:</span><span id="homed" class="pill off">NOT HOMED</span><span class="small homeMsg"></span></div></div>
    <div class="panel"><h2>Blockers</h2><div id="blk"></div></div>
    <div class="panel"><h2>Last action</h2><div id="last" class="small">-</div></div>
    <div class="panel"><div class="btns">
-     <button class="b pri" id="bArm">Arm</button><button class="b" id="bOpen">Open</button><button class="b" id="bReset">Reset</button></div>
+     <button class="b" id="bHome">Home</button><button class="b pri" id="bArm">Arm</button><button class="b" id="bOpen">Open</button><button class="b" id="bReset">Reset</button></div>
      <button class="estop" id="estop">E-STOP</button></div>
   </div>
   <div>
@@ -92,6 +93,14 @@ select{width:auto;min-width:150px;display:block}
    <div class="btns" style="margin-top:8px"><button class="b" id="clearLim">Clear limits</button><button class="b" id="posMode">Set position mode (0)</button><button class="b" id="calMid">Calibrate servo middle here</button><button class="b" id="scan">Scan</button></div>
    <p class="small">Jog is only accepted while IDLE and disarmed. After jogging or setting limits, press Open again before arming. Limits: <span id="limTxt">-</span></p>
    <button class="estop" id="estop2">E-STOP</button></div>
+  <div class="panel"><h2>Position reference</h2>
+   <div class="row"><span id="homed2" class="pill off">NOT HOMED</span><span class="small homeMsg"></span></div>
+   <p class="small" id="estTxt">SEN0628 estimate: -</p>
+   <div class="btns"><button class="b pri" id="bHome2">Home (close to touch)</button><button class="b" id="bSweep">Run calibration sweep</button></div>
+   <p class="small" id="swTxt">Calibration sweep: -</p>
+   <p class="small">Home: gripper empty; the fingers close slowly until a fingertip pad touches, then open. Sweep (first-time setup, or after mechanical changes): gripper empty and nothing in the SEN0628 view; records the sensors from OPEN zero to touch.</p>
+   <canvas id="swChart" style="aspect-ratio:auto;height:220px"></canvas>
+   <p class="small">Fingertip opening (mm from the gripper axis) vs motor position, from the stored sweep.</p></div>
  </div>
  <div class="panel"><h2>Config</h2><div class="cfg" id="svCfg"></div><button class="b pri" id="svSave">Save</button></div>
 </section>
@@ -171,7 +180,8 @@ function makeHm(host,id,title,clickable){
     if(!CFG)return;var k=+id.slice(-1);maskEdit[k]^=(1n<<BigInt(rw*8+c));drawTof();
   };
 }
-function drawHm(cv,sn,mask,nums){
+var FZ=[0n,0n,0n],SW=null;
+function drawHm(cv,sn,mask,nums,idx){
   var g=cv.getContext('2d'),W=cv.width,w=W/8;
   g.clearRect(0,0,W,W);g.font='bold 11px sans-serif';g.textAlign='center';g.textBaseline='middle';
   var off=!sn||!sn.online||!sn.mm;
@@ -185,6 +195,7 @@ function drawHm(cv,sn,mask,nums){
       for(var k=-w;k<w;k+=6){g.moveTo(x+k,y+w);g.lineTo(x+k+w,y)}
       g.save();g.beginPath();g.rect(x,y,w-1,w-1);g.clip();g.stroke();g.restore()}
     if(nums&&!off){g.fillStyle='#000';g.fillText(sn.mm[z],x+w/2,y+w/2)}
+    if(idx!==undefined&&((FZ[idx]>>BigInt(z))&1n)){g.strokeStyle='#ff4fd8';g.lineWidth=2;g.strokeRect(x+1.5,y+1.5,w-4,w-4)}
   }
   if(off){g.fillStyle='#fff';g.font='bold 26px sans-serif';g.fillText('offline',W/2,W/2)}
 }
@@ -204,6 +215,7 @@ function render(){
   var fb=$('faultBox');
   if(st==='FAULT'){fb.style.display='block';fb.innerHTML='FAULT while in '+esc(S.faultFrom)+': '+esc(S.faultReason||S.reason)}else fb.style.display='none';
   var a=$('armed');a.textContent=S.armed?'ARMED':'DISARMED';a.className='pill '+(S.armed?'on':'off');
+  renderHome();
   $('reason').textContent=S.reason||'';
   var bl=S.blockers||[], only=(bl.length===1&&bl[0]==='not armed');
   var hb='';
@@ -230,7 +242,7 @@ function render(){
   else{var sp=L.closeLimit-L.openZero,fr=sp?(pos-L.openZero)/sp:0;
     pb.style.width=Math.max(0,Math.min(100,fr*100))+'%';
     pt.textContent=pos+'  ['+L.openZero+' .. '+L.closeLimit+']'}
-  if(tab==='servo')renderServo();
+  if(tab==='servo'){renderServo();drawSweep();}
   if(tab==='fsr')renderFsr();
   drawTof();
 }
@@ -247,12 +259,12 @@ function drawTof(){
   for(var k=0;k<3;k++){
     var sn=T&&T.sensors?T.sensors[k]:null;
     if(tab==='comb'){
-      drawHm($('ch'+k),sn,null,false);
+      drawHm($('ch'+k),sn,null,false,k);
       var mm=sn&&sn.online?sn.minMm:(mins[k]===undefined?null:mins[k]);
       $('ch'+k+'t').textContent='S'+(k+1)+(mm===null?' offline':'  min '+mm+' mm');
     }
     if(tab==='tof'){
-      drawHm($('th'+k),sn,CFG?maskEdit[k]:null,true);
+      drawHm($('th'+k),sn,CFG?maskEdit[k]:null,true,k);
       $('th'+k+'t').textContent='S'+(k+1)+(sn&&sn.online?'  min '+sn.minMm+' mm':' offline');
     }
   }
@@ -378,6 +390,31 @@ function mkFsr(){
   };
   $('fsrTbl').onclick=function(e){var z=e.target.dataset&&e.target.dataset.z;if(z!==undefined&&z!=='')post('/api/fsr/zero',{id:z}).then(function(j){if(j){toast('Zeroed');loadCal()}})};
 }
+/* ---------- Home and calibration sweep ---------- */
+var swWas=false;
+function renderHome(){var H=S.home||{};
+  ['homed','homed2'].forEach(function(id){var e=$(id);e.textContent=H.homing?'HOMING...':H.sweeping?'SWEEPING...':H.homed?'HOMED':'NOT HOMED';e.className='pill '+(H.homed?'on':'off')});
+  document.querySelectorAll('.homeMsg').forEach(function(e){e.textContent=H.msg||''});
+  $('estTxt').textContent='SEN0628 estimate: '+(H.estimate?('turn '+H.estimate.turn+', position '+H.estimate.pos):(H.homed?'- (homed)':'none (fingers not visible, or no sweep)'));
+  $('swTxt').textContent='Calibration sweep: '+(H.sweeping?('recording, '+H.sweepN+' samples'):(H.sweepLoaded?'stored':'none yet - run it once'));
+  if(swWas&&!H.sweeping)loadSweep();swWas=!!H.sweeping;}
+function loadSweep(){getJ('/api/sweep').then(function(j){SW=j;FZ=(j.fingerZones||['0','0','0']).map(function(h){return BigInt('0x'+h)});drawSweep()}).catch(function(){})}
+function drawSweep(){var c=$('swChart');if(!c||!c.clientWidth)return;var dpr=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
+  c.width=w*dpr;c.height=h*dpr;var g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
+  g.fillStyle='#8a96a3';g.font='11px system-ui';
+  if(!SW||!SW.n){g.fillText('no sweep stored',10,20);return}
+  var P=SW.positions,O=SW.opening,x0=Math.min(SW.openZero,P[0],P[P.length-1]),x1=Math.max(SW.openZero,P[0],P[P.length-1]),
+      ymax=Math.max.apply(null,O.concat([175])),L=40,B=20,X=function(v){return L+(w-L-8)*(v-x0)/((x1-x0)||1)},Y=function(v){return h-B-(h-B-8)*v/ymax};
+  g.strokeStyle='#26313d';for(var t=0;t<=4;t++){var v=ymax*t/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(w-8,y);g.stroke();g.fillText(v.toFixed(0),4,y+4)}
+  g.fillText(String(x0),L,h-4);g.fillText(String(x1),w-60,h-4);
+  g.strokeStyle='#4ea1ff';g.lineWidth=2;g.beginPath();P.forEach(function(p,i){var x=X(p),y=Y(O[i]);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
+  g.fillStyle='#9be38b';g.fillText('OPEN',X(SW.openZero)+3,12);g.fillStyle='#ffb04e';g.fillText('touch',X(SW.touchRef)-34,12);
+  g.strokeStyle='#9be38b';g.beginPath();g.moveTo(X(SW.openZero),8);g.lineTo(X(SW.openZero),h-B);g.stroke();
+  g.strokeStyle='#ffb04e';g.beginPath();g.moveTo(X(SW.touchRef),8);g.lineTo(X(SW.touchRef),h-B);g.stroke();}
+['bHome','bHome2'].forEach(function(id){$(id).onclick=function(){if(confirm('Home: is the gripper empty? The fingers close slowly until a fingertip touches, then open.'))post('/api/servo/home')}});
+$('bSweep').onclick=function(){if(confirm('Calibration sweep: gripper empty and nothing in the SEN0628 view? Takes a few minutes; replaces the stored sweep only if it completes.'))post('/api/servo/sweep')};
+loadSweep();
+
 /* ---------- FSR filter chart (ring buffer of the last 10 s of status polls) ---------- */
 var FL_N=50,flHist=[];   /* 50 polls x 200 ms = 10 s */
 function flShowParams(){var k=+$('flKind').value;
