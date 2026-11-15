@@ -21,6 +21,7 @@ struct FsmInputs {
   uint32_t nowMs; Cmd cmd;
   bool servoOnline; uint32_t servoAgeMs; uint8_t servoStatus; bool servoFullAngle; bool servoModeKnown; uint8_t servoMode;
   int32_t position;
+  bool homed;             // position frame valid since this boot (Home or sweep done)
   bool fsrCalibrated[6]; float fsrForce[6]; bool anyFingerContact; float avgContactForce;
   uint8_t channelsInContact; float maxForce; uint32_t fsrSeq;
   uint8_t tofOnline;      // number (or mask) of online ToF sensors; 0 = none
@@ -34,7 +35,7 @@ struct MotorAction {
 
 // Blocker ids (stable, for the dashboard).
 enum BlockerId : uint8_t {
-  BLK_SERVO_OFFLINE = 1, BLK_SERVO_STATUS, BLK_SERVO_MODE, BLK_FULL_ANGLE, BLK_LIMITS, BLK_NOT_OPENED,
+  BLK_SERVO_OFFLINE = 1, BLK_SERVO_STATUS, BLK_SERVO_MODE, BLK_FULL_ANGLE, BLK_NOT_HOMED, BLK_LIMITS, BLK_NOT_OPENED,
   BLK_FSR_UNCALIBRATED, BLK_FSR_LOADED, BLK_NO_TOF, BLK_NOT_ARMED,
 };
 struct Blocker { uint8_t id; char text[64]; };

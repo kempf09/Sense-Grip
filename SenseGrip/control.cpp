@@ -9,6 +9,7 @@
 #include "servo.h"
 #include "shared.h"
 #include "tof.h"
+#include "homing_core.h"
 
 static QueueHandle_t gQueue = nullptr;
 static ControlStatus gStatus;
@@ -57,6 +58,16 @@ struct Ctl {
   uint32_t posJumps = 0;
   uint32_t fsrUsMax = 0, fsrUsMaxWin = 0;
   bool havePos = false; int32_t lastPos = 0; uint32_t lastPosMs = 0;
+  // Homing (close-to-touch). homed: the logical position frame is valid since this boot.
+  bool homed = false;
+  bool homing = false;
+  uint32_t homeT0 = 0, homeStepMs = 0, homeWinMs = 0, homeUnstickT0 = 0;
+  int32_t homeWinPos = 0;
+  bool homeUnstickUsed = false, homeUnstickActive = false;
+  uint8_t homeContact = 0; uint32_t homeFsrSeq = 0;
+  int32_t homeResidual = 0;
+  char homeMsg[64] = "not homed since power-up";
+  bool pendingOpen = false;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -103,7 +114,108 @@ bool jogPastLimit(const GripConfig& g, int16_t speed, int32_t pos) {
   return g.closePositive ? pos <= g.openZero : pos >= g.openZero;
 }
 
+// ---- Homing (close-to-touch), spec §6.2 ----
+constexpr uint16_t HOME_SPEED = 5, HOME_CURRENT = 120, UNSTICK_CURRENT = 415;
+constexpr uint32_t HOME_TIMEOUT_MS = 60000, UNSTICK_MS = 500, HOME_STEP_MS = 200;
+constexpr int32_t HOME_MAX_RESIDUAL = 600;
+const uint8_t DISTAL_FSR[3] = {5, 3, 4};               // FINGER_FSR_MAP[f][0]
+
+// Task 6 replaces these with the SEN0628-based versions.
+bool fingersVisibleNow(Ctl&) { return true; }           // conservative: no unstick unless known open
+bool estimateDisagrees(Ctl&, int32_t) { return false; }
+
+bool distalTouching(const Ctl& c, const FsrSnapshot& fs) {
+  for (uint8_t i : DISTAL_FSR)
+    if ((c.cfg.fsrEnabled & (1u << i)) && fs.force[i] == fs.force[i] && fs.force[i] >= c.cfg.contactForceN) return true;
+  return false;
+}
+
+void homeStop(Ctl& c, bool ok, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+void homeStop(Ctl& c, bool ok, const char* fmt, ...) {
+  servoStop();
+  c.homing = false;
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(c.homeMsg, sizeof(c.homeMsg), fmt, ap);
+  va_end(ap);
+  say(c, ok, "Home: %s", c.homeMsg);
+}
+
+void homeStep(Ctl& c, const ServoSnapshot& sv, uint16_t current) {
+  const int32_t dir = c.cfg.closePositive ? 1 : -1;
+  if (!servoJogTo(sv.fb.position + dir * HOME_SPEED * 30, HOME_SPEED, current)) {
+    homeStop(c, false, "servo command failed: %s", servoGet().lastError);
+  }
+}
+
+void homeFinish(Ctl& c) {
+  const ServoSnapshot sv = servoGet();
+  const HomeResult r = homeResolve(sv.rawPosition, c.cfg.touchRef, HOME_MAX_RESIDUAL);
+  c.homeResidual = r.residual;
+  if (!r.ok) { homeStop(c, false, "failed: residual %ld counts (limit %ld) - object in the gripper?", (long)r.residual, (long)HOME_MAX_RESIDUAL); return; }
+  if (estimateDisagrees(c, sv.rawPosition + r.posOffset)) { homeStop(c, false, "failed: SEN0628 estimate disagrees with the touch turn"); return; }
+  servoStop();
+  servoSetOffset(r.posOffset);
+  c.havePos = false;                                     // new frame: new jump-guard baseline
+  c.homed = true;
+  c.homing = false;
+  snprintf(c.homeMsg, sizeof(c.homeMsg), "homed, residual %ld counts", (long)r.residual);
+  say(c, true, "Home: %s - opening", c.homeMsg);
+  c.pendingOpen = true;
+}
+
+void homeStart(Ctl& c, const ServoSnapshot& sv, uint32_t now) {
+  if (c.fsm.armed()) { say(c, false, "Home: disarm first"); return; }
+  if (!sv.online || !sv.modeKnown || sv.mode != 0) { say(c, false, "Home refused: servo offline or not in position mode 0"); return; }
+  if (!c.cfg.touchValid) { say(c, false, "Home refused: no touch reference yet - run the calibration sweep first"); return; }
+  const FsrSnapshot fs = fsrGet();
+  if (distalTouching(c, fs)) { homeFinish(c); return; }    // already closed: resolve without moving
+  if (fs.agg.channelsInContact > 0) { say(c, false, "Home refused: an FSR shows contact - empty the gripper"); return; }
+  c.homing = true; c.homeT0 = now; c.homeStepMs = now; c.homeWinMs = now; c.homeWinPos = sv.fb.position;
+  c.homeUnstickUsed = false; c.homeUnstickActive = false; c.homeContact = 0; c.homeFsrSeq = fs.seq;
+  c.homed = false;
+  snprintf(c.homeMsg, sizeof(c.homeMsg), "homing...");
+  say(c, true, "Home: closing slowly to fingertip contact");
+  homeStep(c, sv, HOME_CURRENT);
+}
+
+// Runs every loop iteration while homing.
+void homeUpdate(Ctl& c, uint32_t now) {
+  if (!c.homing) return;
+  const ServoSnapshot sv = servoGet();
+  if (!sv.online || sv.ageMs > SERVO_FRESH_MS) { homeStop(c, false, "aborted: servo feedback lost"); return; }
+  if ((uint32_t)(now - c.homeT0) >= HOME_TIMEOUT_MS) { homeStop(c, false, "aborted: no fingertip contact within 60 s"); return; }
+  const FsrSnapshot fs = fsrGet();
+  if (fs.seq != c.homeFsrSeq) {                          // count consecutive new FSR samples
+    c.homeFsrSeq = fs.seq;
+    c.homeContact = distalTouching(c, fs) ? (uint8_t)(c.homeContact + 1) : 0;
+    if (c.homeContact >= 3) { homeFinish(c); return; }
+  }
+  if (c.homeUnstickActive && (uint32_t)(now - c.homeUnstickT0) >= UNSTICK_MS) c.homeUnstickActive = false;
+  // Stall check over 300 ms windows.
+  const int32_t moved = sv.fb.position - c.homeWinPos;
+  if (moved >= 10 || moved <= -10) { c.homeWinPos = sv.fb.position; c.homeWinMs = now; }
+  else if (stalled(sv.fb.position, c.homeWinPos, now - c.homeWinMs)) {
+    const bool contact = fs.agg.channelsInContact > 0;
+    if (!c.homeUnstickUsed && unstickAllowed(c.homed, sv.fb.position, c.cfg.openZero, c.cfg.closePositive,
+                                             fingersVisibleNow(c), contact)) {
+      c.homeUnstickUsed = true; c.homeUnstickActive = true; c.homeUnstickT0 = now;
+      c.homeWinMs = now;
+      say(c, true, "Home: jaw stuck past open - one push at maximum current");
+      homeStep(c, sv, UNSTICK_CURRENT);
+      return;
+    }
+    homeStop(c, false, "failed: jaw stopped without fingertip contact");
+    return;
+  }
+  if ((uint32_t)(now - c.homeStepMs) >= HOME_STEP_MS) {
+    c.homeStepMs = now;
+    homeStep(c, sv, c.homeUnstickActive ? UNSTICK_CURRENT : HOME_CURRENT);
+  }
+}
+
 void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
+  // Any request (other than another Home press) aborts a running Home.
+  if (c.homing && r.kind != ControlRequest::HOME) homeStop(c, false, "aborted by operator request");
   if (r.kind == ControlRequest::FSM_CMD) {
     jogStop(c);
     cmdOut = r.cmd;
@@ -120,7 +232,8 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
                    : r.kind == ControlRequest::SCAN ? "scan"
                    : r.kind == ControlRequest::CLEAR_LIMITS ? "clear limits"
                    : r.kind == ControlRequest::CALIBRATE_MIDDLE ? "calibrate middle"
-                   : r.kind == ControlRequest::SET_POSITION_MODE ? "set position mode" : "config";
+                   : r.kind == ControlRequest::SET_POSITION_MODE ? "set position mode"
+                   : r.kind == ControlRequest::HOME ? "home" : "config";
   State st = c.fsm.state();
   if (st != State::IDLE && st != State::FAULT) {
     say(c, false, "%s only allowed in IDLE or FAULT (now %s)", what, stateName(st));
@@ -195,6 +308,12 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       applyConfig(c);
       c.fsm.invalidateOpened();
       say(c, true, "limits cleared: jog freely, then set OPEN zero and close limit again");
+      return;
+    }
+    case ControlRequest::HOME: {
+      if (c.homing) return;                               // already running
+      jogStop(c);
+      homeStart(c, sv, now);
       return;
     }
     case ControlRequest::SET_POSITION_MODE: {
@@ -327,6 +446,8 @@ void checkPositionJump(Ctl& c, uint32_t now) {
         GripConfig n = c.cfg; n.limitsValid = false; configSave(n); c.cfg = n; applyConfig(c);
       }
       c.fsm.invalidateOpened();
+      c.homed = false;
+      if (c.homing) homeStop(c, false, "aborted: position jumped");
       say(c, false, "servo position jumped %ld -> %ld: limits cleared, set them again", (long)c.lastPos, (long)pos);
     }
   }
@@ -344,6 +465,8 @@ void publish(Ctl& c) {
   snprintf(s.lastActionMsg, sizeof(s.lastActionMsg), "%s", c.msg);
   s.lastActionOk = c.msgOk;
   s.loopMaxUs = c.loopMaxUs; s.posJumps = c.posJumps; s.fsrSampleUsMax = c.fsrUsMax;
+  s.homed = c.homed; s.homing = c.homing; s.homeResidual = c.homeResidual;
+  snprintf(s.homeMsg, sizeof(s.homeMsg), "%s", c.homeMsg);
   portENTER_CRITICAL(&gMux);
   memcpy(&gStatus, &s, sizeof(s));
   portEXIT_CRITICAL(&gMux);
@@ -401,6 +524,7 @@ void controlTask(void*) {
 
     if (estop) {
       jogStop(*c);
+      if (c->homing) homeStop(*c, false, "aborted by E-stop");
       cmd = Cmd::ESTOP;
     } else if (gQueue) {
       ControlRequest r;
@@ -437,7 +561,11 @@ void controlTask(void*) {
     }
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
-    MotorAction a = c->fsm.step(buildInputs(now, cmd));
+    homeUpdate(*c, now);
+    if (c->pendingOpen && cmd == Cmd::NONE) { c->pendingOpen = false; cmd = Cmd::OPEN; }
+    FsmInputs fin = buildInputs(now, cmd);
+    fin.homed = c->homed;
+    MotorAction a = c->fsm.step(fin);
     if (a.kind != MotorAction::NONE && !applyAction(a)) {
       c->fsm.motorFailed(servoGet().lastError);
       servoStop();

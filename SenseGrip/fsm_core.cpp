@@ -193,6 +193,7 @@ MotorAction Fsm::onOpen(const FsmInputs& in) {
   }
   if (!in.servoModeKnown || in.servoMode != 0) { setReason("Open refused: servo not in position mode 0"); return NO_ACTION; }
   if (!in.servoFullAngle) { setReason("Open refused: servo multi-turn (full-angle) feedback off"); return NO_ACTION; }
+  if (!in.homed) { setReason("Open refused: not homed — press Home"); return NO_ACTION; }
   if (const char* p = limitsProblem(cfg_)) { setReason("Open refused: %s", p); return NO_ACTION; }
   return enter(State::OPEN, "Open requested");
 }
@@ -268,6 +269,7 @@ void Fsm::computeBlockers(const FsmInputs& in) {
     addBlocker(BLK_SERVO_MODE, "servo in mode %u, not position mode 0 — Servo tab: Set position mode", (unsigned)in.servoMode);
   if (!in.servoFullAngle) addBlocker(BLK_FULL_ANGLE, "servo multi-turn (full-angle) feedback off");
   if (const char* p = limitsProblem(cfg_)) addBlocker(BLK_LIMITS, "%s", p);
+  if (!in.homed) addBlocker(BLK_NOT_HOMED, "not homed — press Home (gripper must be empty)");
   if (!openedSinceBoot_) addBlocker(BLK_NOT_OPENED, "not at OPEN — press Open (after power-up, jog, new limits)");
   for (int i = 0; i < FSR_COUNT; i++) {
     if (!in.fsrCalibrated[i]) addBlocker(BLK_FSR_UNCALIBRATED, "FSR %d not calibrated", FSR_CHANNEL_NUMBER[i]);

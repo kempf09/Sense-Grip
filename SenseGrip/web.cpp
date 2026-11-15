@@ -179,6 +179,9 @@ static void handleStatus() {
   o.put("]},\"limits\":{\"openZero\":%ld,\"closeLimit\":%ld,\"valid\":",
         (long)cfg.openZero, (long)cfg.closeLimit);
   o.boolean(cfg.limitsValid);
+  o.put("},\"home\":{\"homed\":"); o.boolean(cs.homed);
+  o.put(",\"homing\":"); o.boolean(cs.homing);
+  o.put(",\"residual\":%ld,\"msg\":", (long)cs.homeResidual); o.str(cs.homeMsg);
   o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu}}",
         (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors,
         (unsigned long)cs.fsrSampleUsMax);
@@ -400,6 +403,7 @@ void webBegin() {
   server.on("/api/servo/setClose", HTTP_POST, [] { simple(ControlRequest::SET_CLOSE); });
   server.on("/api/servo/scan", HTTP_POST, [] { simple(ControlRequest::SCAN); });
   server.on("/api/servo/clearLimits", HTTP_POST, [] { simple(ControlRequest::CLEAR_LIMITS); });
+  server.on("/api/servo/home", HTTP_POST, [] { simple(ControlRequest::HOME); });
   server.on("/api/servo/positionMode", HTTP_POST, [] { simple(ControlRequest::SET_POSITION_MODE); });
   server.on("/api/servo/calibrateMiddle", HTTP_POST, [] { simple(ControlRequest::CALIBRATE_MIDDLE); });
   server.on("/api/fsm/arm", HTTP_POST, [] { fsmCmd(Cmd::ARM); });

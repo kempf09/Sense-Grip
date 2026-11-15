@@ -13,7 +13,7 @@ static FsmInputs ready(uint32_t now = 0) {
   FsmInputs in{};
   in.nowMs = now; in.cmd = Cmd::NONE;
   in.servoOnline = true; in.servoAgeMs = 5; in.servoStatus = 0;
-  in.servoFullAngle = true; in.servoModeKnown = true; in.servoMode = 0; in.position = 1968;
+  in.servoFullAngle = true; in.servoModeKnown = true; in.servoMode = 0; in.homed = true; in.position = 1968;
   for (int i = 0; i < 6; i++) { in.fsrCalibrated[i] = true; in.fsrForce[i] = 0; }
   in.tofOnline = 3; in.objectPresent = false;
   return in;
@@ -635,4 +635,27 @@ TEST(fsm_close_limit_reached_within_tolerance_faults) {
   f.step(in);
   CHECK(f.state() == State::FAULT);
   CHECK(strstr(f.faultReason(), "close limit") != nullptr);
+}
+
+TEST(fsm_not_homed_blocks_and_refuses_open) {
+  Fsm f(cfg());
+  FsmInputs in = ready();
+  in.homed = false;
+  f.step(in);
+  Blocker b[Fsm::MAX_REPORTED];
+  uint8_t n = f.blockers(b, Fsm::MAX_REPORTED);
+  bool found = false;
+  for (uint8_t i = 0; i < n; i++) if (strstr(b[i].text, "not homed")) found = true;
+  CHECK(found);
+  in.cmd = Cmd::OPEN;
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(strstr(f.reason(), "not homed") != nullptr);
+}
+TEST(fsm_homed_no_blocker) {
+  Fsm f(cfg());
+  FsmInputs in = ready();
+  f.step(in);
+  Blocker b[Fsm::MAX_REPORTED];
+  uint8_t n = f.blockers(b, Fsm::MAX_REPORTED);
+  for (uint8_t i = 0; i < n; i++) CHECK(strstr(b[i].text, "not homed") == nullptr);
 }
