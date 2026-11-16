@@ -10,7 +10,7 @@ GripConfig defaultConfig() {
   c.contactForceN = 0.25f; c.contactSamples = 3;
   c.graspForceN = 1.0f; c.graspSamples = 3;
   c.minActiveFsr = 2;
-  c.maxForceN = 3.0f;
+  c.maxForceN = 8.0f;   // above the large class force (4 N); was 3 N before v7
   c.detectMm = 80; c.detectHoldMs = 200;
   c.preTouchTimeoutMs = 8000; c.graspTimeoutMs = 5000; c.openTimeoutMs = 15000;
   c.runViaPosition = false;
@@ -18,6 +18,11 @@ GripConfig defaultConfig() {
   c.fsrEnabled = 0x3F;
   c.fsrFilter = 2; c.fsrFilterWindow = 5; c.fsrFilterAlpha = 0.3f; c.fsrKalmanQ = 0.01f; c.fsrKalmanR = 0.05f;
   c.touchRef = 0; c.touchValid = false;
+  c.smallMaxMm = 50; c.mediumMaxMm = 90; c.contactSpeed = 15;
+  c.smallStandoffMm = 10;    c.smallForceN = 1.0f;    c.smallMaxCurrent = 200;    c.smallGraspSpeed = 5;
+  c.mediumStandoffMm = 10;   c.mediumForceN = 2.0f;   c.mediumMaxCurrent = 260;   c.mediumGraspSpeed = 5;
+  c.largeStandoffMm = 10;    c.largeForceN = 4.0f;    c.largeMaxCurrent = 350;    c.largeGraspSpeed = 5;
+  c.delicateStandoffMm = 15; c.delicateForceN = 0.4f; c.delicateMaxCurrent = 150; c.delicateGraspSpeed = 3;
   return c;
 }
 
@@ -66,6 +71,20 @@ bool clampConfig(GripConfig& c) {
   ch |= clampInt(c.preTouchTimeoutMs, 500, 60000);
   ch |= clampInt(c.graspTimeoutMs, 500, 60000);
   ch |= clampInt(c.openTimeoutMs, 500, 60000);
+  ch |= clampInt(c.smallMaxMm, 20, 250);
+  ch |= clampInt(c.mediumMaxMm, 20, 250);
+  ch |= clampInt(c.contactSpeed, 1, SPEED_MAX);
+  struct P { float* st; float* f; uint16_t* cur; uint16_t* sp; float dst, df; };
+  const P ps[4] = {{&c.smallStandoffMm, &c.smallForceN, &c.smallMaxCurrent, &c.smallGraspSpeed, d.smallStandoffMm, d.smallForceN},
+                   {&c.mediumStandoffMm, &c.mediumForceN, &c.mediumMaxCurrent, &c.mediumGraspSpeed, d.mediumStandoffMm, d.mediumForceN},
+                   {&c.largeStandoffMm, &c.largeForceN, &c.largeMaxCurrent, &c.largeGraspSpeed, d.largeStandoffMm, d.largeForceN},
+                   {&c.delicateStandoffMm, &c.delicateForceN, &c.delicateMaxCurrent, &c.delicateGraspSpeed, d.delicateStandoffMm, d.delicateForceN}};
+  for (const P& p : ps) {
+    ch |= clampF(*p.st, 0.0f, 50.0f, p.dst);
+    ch |= clampF(*p.f, 0.1f, 30.0f, p.df);
+    ch |= clampInt(*p.cur, 50, 415);
+    ch |= clampInt(*p.sp, 1, SPEED_MAX);
+  }
   return ch;
 }
 
@@ -73,6 +92,32 @@ const char* limitsProblem(const GripConfig& c) {
   if (!c.limitsValid) return "OPEN zero / close limit not set";
   bool ok = c.closePositive ? (c.closeLimit > c.openZero) : (c.closeLimit < c.openZero);
   if (!ok) return "close limit is not on the closing side of OPEN zero";
+  return nullptr;
+}
+
+ClassProfile profileOf(const GripConfig& c, ObjClass k) {
+  switch (k) {
+    case ObjClass::SMALL:    return {c.smallStandoffMm, c.smallForceN, c.smallMaxCurrent, c.smallGraspSpeed};
+    case ObjClass::MEDIUM:   return {c.mediumStandoffMm, c.mediumForceN, c.mediumMaxCurrent, c.mediumGraspSpeed};
+    case ObjClass::LARGE:    return {c.largeStandoffMm, c.largeForceN, c.largeMaxCurrent, c.largeGraspSpeed};
+    case ObjClass::DELICATE: break;
+  }
+  return {c.delicateStandoffMm, c.delicateForceN, c.delicateMaxCurrent, c.delicateGraspSpeed};
+}
+
+const char* profileProblem(const GripConfig& c) {
+  if (c.smallMaxMm >= c.mediumMaxMm) return "small/medium width limit must be below the medium/large limit";
+  static const char* const BELOW_MAX[4] = {
+      "small target force must be below Max force N (FSR tab)", "medium target force must be below Max force N (FSR tab)",
+      "large target force must be below Max force N (FSR tab)", "delicate target force must be below Max force N (FSR tab)"};
+  static const char* const ABOVE_CONTACT[4] = {
+      "small target force must be above Contact force N", "medium target force must be above Contact force N",
+      "large target force must be above Contact force N", "delicate target force must be above Contact force N"};
+  for (int k = 0; k < 4; k++) {
+    const ClassProfile p = profileOf(c, (ObjClass)k);
+    if (!(p.forceN > c.contactForceN)) return ABOVE_CONTACT[k];
+    if (!(p.forceN < c.maxForceN)) return BELOW_MAX[k];
+  }
   return nullptr;
 }
 

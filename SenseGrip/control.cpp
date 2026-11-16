@@ -623,6 +623,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
         const char* prob = limitsProblem(n);
         if (prob) { say(c, false, "config refused: %s", prob); return; }
       }
+      if (const char* prob = profileProblem(n)) { say(c, false, "config refused: %s", prob); return; }
       if (!configSave(n)) { say(c, false, "config failed: could not save"); return; }
       const bool motionChanged = n.closePositive != c.cfg.closePositive;
       c.cfg = n;

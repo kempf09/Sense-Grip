@@ -44,7 +44,7 @@ struct Out {
 };
 
 static char statusBuf[8192];            // only the web task touches these (status incl. up to 21 blockers)
-static char smallBuf[1536];
+static char smallBuf[3072];   // config JSON incl. the v7 class profiles (~1.6 kB)
 
 static void sendJson(int code, const char* body) {
   server.sendHeader("Cache-Control", "no-store");
@@ -243,6 +243,11 @@ static const Field FIELDS[] = {
   F_(preTouchTimeoutMs, T_U32), F_(graspTimeoutMs, T_U32), F_(openTimeoutMs, T_U32),
   F_(fsrEnabled, T_U8),
   F_(fsrFilter, T_U8), F_(fsrFilterWindow, T_U8), F_(fsrFilterAlpha, T_F), F_(fsrKalmanQ, T_F), F_(fsrKalmanR, T_F),
+  F_(smallMaxMm, T_U16), F_(mediumMaxMm, T_U16), F_(contactSpeed, T_U16),
+  F_(smallStandoffMm, T_F), F_(smallForceN, T_F), F_(smallMaxCurrent, T_U16), F_(smallGraspSpeed, T_U16),
+  F_(mediumStandoffMm, T_F), F_(mediumForceN, T_F), F_(mediumMaxCurrent, T_U16), F_(mediumGraspSpeed, T_U16),
+  F_(largeStandoffMm, T_F), F_(largeForceN, T_F), F_(largeMaxCurrent, T_U16), F_(largeGraspSpeed, T_U16),
+  F_(delicateStandoffMm, T_F), F_(delicateForceN, T_F), F_(delicateMaxCurrent, T_U16), F_(delicateGraspSpeed, T_U16),
   { "tofMask0", T_MASK, offsetof(GripConfig, tofMask), 0 },
   { "tofMask1", T_MASK, offsetof(GripConfig, tofMask), 1 },
   { "tofMask2", T_MASK, offsetof(GripConfig, tofMask), 2 },

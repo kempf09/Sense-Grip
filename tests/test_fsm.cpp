@@ -5,6 +5,7 @@
 static GripConfig cfg() {
   GripConfig c = defaultConfig();
   c.openZero = 1968; c.closeLimit = 19102; c.closePositive = true; c.limitsValid = true;
+  c.maxForceN = 3.0f;   // the force-limit tests were written against 3 N
   return c;
 }
 

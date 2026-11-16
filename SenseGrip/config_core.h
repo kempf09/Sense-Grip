@@ -29,7 +29,21 @@ struct GripConfig {
   // v6: homing touch reference (logical position where the fingertips touch).
   int32_t touchRef;
   bool touchValid;
+  // v7: object classes (phase 3). Width thresholds (mm), slow-to-contact speed, and one grasp
+  // profile per class: stand-off (mm), target force (N), max current (x6.5 mA), grasp speed.
+  uint16_t smallMaxMm, mediumMaxMm;
+  uint16_t contactSpeed;
+  float smallStandoffMm, smallForceN;       uint16_t smallMaxCurrent, smallGraspSpeed;
+  float mediumStandoffMm, mediumForceN;     uint16_t mediumMaxCurrent, mediumGraspSpeed;
+  float largeStandoffMm, largeForceN;       uint16_t largeMaxCurrent, largeGraspSpeed;
+  float delicateStandoffMm, delicateForceN; uint16_t delicateMaxCurrent, delicateGraspSpeed;
 };
+
+enum class ObjClass : uint8_t { SMALL = 0, MEDIUM = 1, LARGE = 2, DELICATE = 3 };
+struct ClassProfile { float standoffMm, forceN; uint16_t maxCurrent, graspSpeed; };
+ClassProfile profileOf(const GripConfig& c, ObjClass k);
+// nullptr if the class settings are usable, else the reason (names the class and the fix).
+const char* profileProblem(const GripConfig& c);
 
 GripConfig defaultConfig();
 // Size of the config blob saved by versions 1 and 2 (everything before fsrEnabled).
@@ -43,6 +57,10 @@ constexpr unsigned GRIP_CONFIG_V4_BLOB_SIZE =
 constexpr unsigned GRIP_CONFIG_V5_SIZE = __builtin_offsetof(GripConfig, touchRef);
 constexpr unsigned GRIP_CONFIG_V5_BLOB_SIZE =
     (GRIP_CONFIG_V5_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
+// Version 6 held the fields before smallMaxMm; its stored blob was padded to the struct alignment.
+constexpr unsigned GRIP_CONFIG_V6_SIZE = __builtin_offsetof(GripConfig, smallMaxMm);
+constexpr unsigned GRIP_CONFIG_V6_BLOB_SIZE =
+    (GRIP_CONFIG_V6_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
 // The FSR filter settings as FilterParams.
 FilterParams filterParamsOf(const GripConfig& c);
 // Clamps every field into range; returns true if anything changed.

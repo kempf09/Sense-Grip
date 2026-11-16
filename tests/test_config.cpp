@@ -97,3 +97,52 @@ TEST(limits_restorable_after_home) {
   c = defaultConfig(); c.touchValid = true;            // never set (both 0)
   CHECK(!limitsRestorable(c));
 }
+
+// ---- v7: class thresholds and grasp profiles (phase 3) ----
+#include <cstring>
+static bool sameProfile(ClassProfile p, float st, float f, uint16_t cur, uint16_t sp) {
+  return std::fabs(p.standoffMm - st) < 1e-4f && std::fabs(p.forceN - f) < 1e-4f && p.maxCurrent == cur && p.graspSpeed == sp;
+}
+TEST(config_v7_defaults) {
+  GripConfig c = defaultConfig();
+  CHECK_EQ(c.smallMaxMm, (uint16_t)50);
+  CHECK_EQ(c.mediumMaxMm, (uint16_t)90);
+  CHECK_EQ(c.contactSpeed, (uint16_t)15);
+  CHECK_NEAR(c.maxForceN, 8.0f, 1e-6);
+  CHECK(sameProfile(profileOf(c, ObjClass::SMALL), 10, 1.0f, 200, 5));
+  CHECK(sameProfile(profileOf(c, ObjClass::MEDIUM), 10, 2.0f, 260, 5));
+  CHECK(sameProfile(profileOf(c, ObjClass::LARGE), 10, 4.0f, 350, 5));
+  CHECK(sameProfile(profileOf(c, ObjClass::DELICATE), 15, 0.4f, 150, 3));
+  CHECK(!clampConfig(c));
+  CHECK(profileProblem(c) == nullptr);
+}
+TEST(config_profile_problem) {
+  GripConfig c = defaultConfig();
+  c.largeForceN = 9;
+  CHECK(profileProblem(c) != nullptr);
+  c = defaultConfig(); c.delicateForceN = 0.2f;              // below contact force 0.25
+  CHECK(profileProblem(c) != nullptr);
+  c = defaultConfig(); c.smallMaxMm = 95; c.mediumMaxMm = 90;
+  CHECK(profileProblem(c) != nullptr);
+}
+TEST(config_v6_migrated_max_force) {
+  GripConfig c = defaultConfig(); c.maxForceN = 3.0f;      // a stored v6 config keeps 3 N
+  const char* p = profileProblem(c);
+  CHECK(p != nullptr);
+  CHECK(std::strstr(p, "large") != nullptr);
+  CHECK(std::strstr(p, "Max force") != nullptr);
+}
+TEST(config_v6_size_constants) {
+  CHECK_EQ((unsigned)GRIP_CONFIG_V6_SIZE, (unsigned)offsetof(GripConfig, smallMaxMm));
+  CHECK(GRIP_CONFIG_V6_BLOB_SIZE >= GRIP_CONFIG_V6_SIZE);
+  CHECK_EQ((unsigned)(GRIP_CONFIG_V6_BLOB_SIZE % alignof(GripConfig)), 0u);
+}
+TEST(config_v7_fields_clamped) {
+  GripConfig c = defaultConfig();
+  c.largeMaxCurrent = 999; c.smallGraspSpeed = 0; c.mediumStandoffMm = 80; c.contactSpeed = 200;
+  CHECK(clampConfig(c));
+  CHECK_EQ(c.largeMaxCurrent, (uint16_t)415);
+  CHECK_EQ(c.smallGraspSpeed, (uint16_t)1);
+  CHECK_NEAR(c.mediumStandoffMm, 50.0f, 1e-6);
+  CHECK_EQ(c.contactSpeed, SPEED_MAX);
+}
