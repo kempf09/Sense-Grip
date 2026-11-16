@@ -1,5 +1,6 @@
 #include "sweep_core.h"
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 namespace {
@@ -37,12 +38,20 @@ int compare(const SweepModel& m, const uint16_t a[3][64], uint8_t aValid, const 
 }  // namespace
 
 bool sweepValid(const SweepSample* s, int n, int32_t openZero, bool closePositive) {
-  if (n < 20 || n > SWEEP_MAX) return false;
+  char b[80];
+  return sweepInvalidWhy(s, n, openZero, closePositive, b, sizeof b) == nullptr;
+}
+
+const char* sweepInvalidWhy(const SweepSample* s, int n, int32_t openZero, bool closePositive, char* buf, int bufLen) {
+  if (n < 20 || n > SWEEP_MAX) { std::snprintf(buf, bufLen, "%d samples (need 20..%d)", n, SWEEP_MAX); return buf; }
   const int32_t d0 = fromOpen(s[0].pos, openZero, closePositive);
-  if (d0 > 150 || d0 < -150) return false;
+  if (d0 > 150 || d0 < -150) { std::snprintf(buf, bufLen, "first sample %ld counts from OPEN zero (max 150)", (long)d0); return buf; }
   for (int i = 1; i < n; i++)
-    if (fromOpen(s[i].pos, openZero, closePositive) <= fromOpen(s[i - 1].pos, openZero, closePositive)) return false;
-  return true;
+    if (fromOpen(s[i].pos, openZero, closePositive) <= fromOpen(s[i - 1].pos, openZero, closePositive)) {
+      std::snprintf(buf, bufLen, "sample %d at %ld not past sample %d at %ld", i, (long)s[i].pos, i - 1, (long)s[i - 1].pos);
+      return buf;
+    }
+  return nullptr;
 }
 
 void sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_t openZero,

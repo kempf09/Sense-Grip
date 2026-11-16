@@ -18,7 +18,9 @@ struct SweepModel {
 struct PosEstimate { bool valid; int32_t pos; float score; };
 
 // n >= 20, first sample within 150 counts of openZero, positions strictly monotonic toward closing.
-bool  sweepValid(const SweepSample* s, int n, int32_t openZero, bool closePositive);
+bool sweepValid(const SweepSample* s, int n, int32_t openZero, bool closePositive);
+// Same check; nullptr when valid, else the reason (written into buf).
+const char* sweepInvalidWhy(const SweepSample* s, int n, int32_t openZero, bool closePositive, char* buf, int bufLen);
 void  sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_t openZero,
                    int32_t touchRef, bool closePositive, SweepModel& out);
 // Fingertip opening (mm) at a logical position: linear interpolation between samples.

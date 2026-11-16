@@ -11,5 +11,6 @@ bool sweepLoaded();
 SweepSample* sweepScratch();                // SWEEP_MAX entries for a sweep in progress
 // Analyze scratch[0..n), save it to flash, and only then make it the loaded sweep. On failure the
 // loaded sweep (RAM and flash) is unchanged.
-bool sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, int32_t touchRef, bool closePositive);
+// Returns nullptr on success, else which step failed (incl. LittleFS used/total bytes).
+const char* sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, int32_t touchRef, bool closePositive);
 bool tofCalibLoad(SensorCalib out[3]);      // false (defaults returned) when senCal2 is missing

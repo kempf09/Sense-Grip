@@ -9,6 +9,14 @@ SweepSample* gSamples = nullptr;
 SweepSample* gScratch = nullptr;
 SweepModel gModel = {};
 bool gLoaded = false;
+bool gMounted = false;
+char gErr[96];
+const char* fail(const char* what) {
+  if (gMounted) snprintf(gErr, sizeof gErr, "%s (LittleFS %u/%u bytes used)", what,
+                         (unsigned)LittleFS.usedBytes(), (unsigned)LittleFS.totalBytes());
+  else snprintf(gErr, sizeof gErr, "%s (LittleFS not mounted: no data partition?)", what);
+  return gErr;
+}
 }  // namespace
 
 bool sweepStoreBegin() {
@@ -21,7 +29,9 @@ bool sweepStoreBegin() {
     if (!gScratch) gScratch = (SweepSample*)malloc(sizeof(SweepSample) * SWEEP_MAX);
   }
   gModel.n = 0; gLoaded = false;
-  if (!gSamples || !LittleFS.begin(true)) return false;
+  if (!gSamples) return false;
+  gMounted = LittleFS.begin(true);
+  if (!gMounted) return false;
   File f = LittleFS.open("/sweep.bin", "r");
   if (!f) return false;
   uint32_t magic = 0; int32_t n = 0;
@@ -42,24 +52,27 @@ bool sweepLoaded() { return gLoaded && gModel.n > 0; }
 
 SweepSample* sweepScratch() { return gScratch; }
 
-bool sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, int32_t touchRef, bool closePositive) {
-  if (!gSamples || !gScratch || n < 20 || n > SWEEP_MAX) return false;
+const char* sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, int32_t touchRef, bool closePositive) {
+  if (!gSamples || !gScratch) return fail("no sweep buffer");
+  if (n < 20 || n > SWEEP_MAX) return fail("bad sample count");
+  if (!gMounted) gMounted = LittleFS.begin(true);       // retry the mount (formats if needed)
+  if (!gMounted) return fail("mount failed");
   static SweepModel model;                               // analyze into a temporary model first
   sweepAnalyze(gScratch, n, cal, openZero, touchRef, closePositive, model);
   File f = LittleFS.open("/sweep.tmp", "w");
-  if (!f) return false;
+  if (!f) return fail("cannot create /sweep.tmp");
   const uint32_t magic = MAGIC; const int32_t nn = n;
   bool ok = f.write((const uint8_t*)&magic, 4) == 4 && f.write((const uint8_t*)&nn, 4) == 4 &&
             f.write((const uint8_t*)&model, sizeof(model)) == sizeof(model) &&
             f.write((const uint8_t*)gScratch, sizeof(SweepSample) * n) == sizeof(SweepSample) * (size_t)n;
   f.close();
-  if (!ok) { LittleFS.remove("/sweep.tmp"); return false; }
+  if (!ok) { LittleFS.remove("/sweep.tmp"); return fail("write failed (flash full?)"); }
   LittleFS.remove("/sweep.bin");                         // old file kept until the new one is complete
-  if (!LittleFS.rename("/sweep.tmp", "/sweep.bin")) return false;
+  if (!LittleFS.rename("/sweep.tmp", "/sweep.bin")) return fail("rename /sweep.tmp failed");
   memcpy(gSamples, gScratch, sizeof(SweepSample) * n);   // only now replace the loaded sweep
   gModel = model;
   gLoaded = true;
-  return true;
+  return nullptr;
 }
 
 bool tofCalibLoad(SensorCalib out[3]) {

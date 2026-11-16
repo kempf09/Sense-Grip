@@ -111,3 +111,13 @@ TEST(check_tolerates_ten_percent_at_long_range) {
   CHECK(!positionMismatch(m, v.data(), v[150].pos, frame, 0x7, 25.0f));
   CHECK(positionMismatch(m, v.data(), v[40].pos, v[150].mm, 0x7, 25.0f));
 }
+
+TEST(sweep_invalid_why_names_the_problem) {
+  auto v = makeSweep();
+  char b[64];
+  CHECK(sweepInvalidWhy(v.data(), N, 2000, true, b, sizeof b) == nullptr);
+  CHECK(std::strstr(sweepInvalidWhy(v.data(), 10, 2000, true, b, sizeof b), "10 samples") != nullptr);
+  CHECK(std::strstr(sweepInvalidWhy(v.data(), N, 1600, true, b, sizeof b), "400 counts") != nullptr);
+  auto w = v; w[50].pos = w[49].pos;
+  CHECK(std::strstr(sweepInvalidWhy(w.data(), N, 2000, true, b, sizeof b), "sample 50") != nullptr);
+}

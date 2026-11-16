@@ -287,6 +287,13 @@ void sweepStop(Ctl& c, bool ok, const char* why) {
 }
 
 void sweepRecord(Ctl& c, const ServoSnapshot& sv) {
+  // Torque off under load can let the jaw spring back a few counts: a sample that is not at least
+  // 10 counts past the previous one is skipped (the samples must increase toward closing).
+  if (c.swN > 0) {
+    const int32_t prev = sweepScratch()[c.swN - 1].pos;
+    const int32_t adv = c.cfg.closePositive ? sv.fb.position - prev : prev - sv.fb.position;
+    if (adv < 10) return;
+  }
   SweepSample& s = sweepScratch()[c.swN];               // never the loaded sweep (abort keeps it intact)
   s.pos = sv.fb.position;
   s.valid = currentFrame(s.mm);
@@ -298,12 +305,13 @@ void sweepFinish(Ctl& c) {
   c.sweeping = false;
   const ServoSnapshot sv = servoGet();
   const int32_t touch = sv.fb.position;
-  if (!sweepValid(sweepScratch(), c.swN, c.cfg.openZero, c.cfg.closePositive)) {
-    say(c, false, "Sweep: not saved - recording invalid (%d samples); previous sweep kept", c.swN);
+  char why[80];
+  if (const char* bad = sweepInvalidWhy(sweepScratch(), c.swN, c.cfg.openZero, c.cfg.closePositive, why, sizeof why)) {
+    say(c, false, "Sweep: not saved - %s", bad);
     return;
   }
-  if (!sweepStoreCommit(c.swN, c.cal, c.cfg.openZero, touch, c.cfg.closePositive)) {
-    say(c, false, "Sweep: could not save /sweep.bin; previous sweep kept"); return;
+  if (const char* err = sweepStoreCommit(c.swN, c.cal, c.cfg.openZero, touch, c.cfg.closePositive)) {
+    say(c, false, "Sweep: not saved - %s", err); return;
   }
   GripConfig n = c.cfg;
   n.touchRef = touch; n.touchValid = true;
