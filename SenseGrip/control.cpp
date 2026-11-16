@@ -451,6 +451,8 @@ void checkUpdate(Ctl& c, uint32_t now) {
   }
 }
 
+void captureBackground(Ctl& c);   // phase 3, defined below
+
 void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
   // Any request (other than another Home press) aborts a running Home.
   if (c.homing && r.kind != ControlRequest::HOME) homeStop(c, false, "aborted by operator request");
