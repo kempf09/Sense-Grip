@@ -185,6 +185,7 @@ static void handleStatus() {
   o.put(",\"residual\":%ld,\"msg\":", (long)cs.homeResidual); o.str(cs.homeMsg);
   o.put(",\"sweeping\":"); o.boolean(cs.sweeping);
   o.put(",\"sweepN\":%ld,\"sweepLoaded\":", (long)cs.sweepN); o.boolean(cs.sweepLoaded);
+  o.put(",\"touchValid\":"); o.boolean(cfg.touchValid);
   o.put(",\"estimate\":");
   if (cs.estValid) o.put("{\"pos\":%ld,\"turn\":%ld}", (long)cs.estPos, (long)cs.estTurn); else o.put("null");
   o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu}}",
@@ -409,6 +410,12 @@ static void handleJog() {
 }
 
 static void simple(ControlRequest::Kind k) { sendQueued(blankReq(k)); }
+// ?newFrame=1: the operator confirmed setting a limit while not homed (drops the touch reference).
+static void setLimit(ControlRequest::Kind k) {
+  ControlRequest r = blankReq(k);
+  r.newFrame = server.hasArg("newFrame") && server.arg("newFrame") == "1";
+  sendQueued(r);
+}
 
 static void handleEstop() {
   controlRequestEstop();                // flag path first; always effective
@@ -429,8 +436,8 @@ void webBegin() {
   server.on("/api/fsr/zero", HTTP_POST, handleZeroPost);
   server.on("/api/servo/jog", HTTP_POST, handleJog);
   server.on("/api/servo/stop", HTTP_POST, [] { simple(ControlRequest::JOG_STOP); });
-  server.on("/api/servo/setOpen", HTTP_POST, [] { simple(ControlRequest::SET_OPEN); });
-  server.on("/api/servo/setClose", HTTP_POST, [] { simple(ControlRequest::SET_CLOSE); });
+  server.on("/api/servo/setOpen", HTTP_POST, [] { setLimit(ControlRequest::SET_OPEN); });
+  server.on("/api/servo/setClose", HTTP_POST, [] { setLimit(ControlRequest::SET_CLOSE); });
   server.on("/api/servo/scan", HTTP_POST, [] { simple(ControlRequest::SCAN); });
   server.on("/api/servo/clearLimits", HTTP_POST, [] { simple(ControlRequest::CLEAR_LIMITS); });
   server.on("/api/servo/home", HTTP_POST, [] { simple(ControlRequest::HOME); });

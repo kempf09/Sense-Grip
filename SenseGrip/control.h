@@ -7,6 +7,7 @@
 struct ControlRequest {
   enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG, CLEAR_LIMITS, CALIBRATE_MIDDLE, SET_POSITION_MODE, HOME, SWEEP } kind;
   Cmd cmd; int16_t speed; bool ignoreLimits; GripConfig cfg;   // ignoreLimits: JOG only
+  bool newFrame;   // SET_OPEN/SET_CLOSE while not homed: confirmed start of a new frame (drops the touch reference)
 };
 
 struct ControlStatus {

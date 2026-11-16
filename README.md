@@ -65,7 +65,7 @@ position, never near closed. Home gives up after 120 s (full travel at speed 5 t
 OPEN zero and the close limit are saved in the same frame as the touch reference. When a lost
 turn count clears them (servo power cycle, Set position mode), a successful Home re-enables
 them ("homed, ... limits restored"). Setting OPEN zero or the close limit while **not** homed
-starts a new frame: the touch reference is dropped and the calibration sweep must be run again.
+starts a new frame: it is refused unless confirmed on the dashboard; confirmed, the touch reference is dropped and the calibration sweep must be run again.
 
 **If Home keeps failing** (pads changed, mechanics changed, after Calibrate servo middle): jog to
 fully open, press Set OPEN zero, and run the calibration sweep again. The sweep is only allowed

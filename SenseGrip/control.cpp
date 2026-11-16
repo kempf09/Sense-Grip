@@ -513,6 +513,10 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       // off: a limit set now belongs to a new frame, so the old touch reference no longer applies
       // (re-calibration path: set the limits, then run the calibration sweep).
       const bool dropTouch = n.touchValid && !c.homed;
+      if (dropTouch && !r.newFrame) {
+        say(c, false, "%s refused: not homed - press Home first (or confirm a new frame, which needs a new calibration sweep)", what);
+        return;
+      }
       if (dropTouch) n.touchValid = false;
       if (isOpen) n.openZero = sv.fb.position; else n.closeLimit = sv.fb.position;
       if (isOpen) c.openZeroSetThisBoot = true;

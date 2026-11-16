@@ -365,8 +365,11 @@ function jogStart(dir){
 });
 window.addEventListener('blur',jogStop);
 document.addEventListener('visibilitychange',function(){if(document.hidden)jogStop()});
-$('setOpen').onclick=function(){post('/api/servo/setOpen')};
-$('setClose').onclick=function(){post('/api/servo/setClose')};
+function setLim(u){var H=(S&&S.home)||{};
+  if(H.touchValid&&!H.homed){if(!confirm('Not homed. Saving a limit now starts a new position frame: the touch reference is dropped and the calibration sweep must be run again. Usually press Home instead. Continue?'))return;u+='?newFrame=1'}
+  post(u)}
+$('setOpen').onclick=function(){setLim('/api/servo/setOpen')};
+$('setClose').onclick=function(){setLim('/api/servo/setClose')};
 $('scan').onclick=function(){post('/api/servo/scan')};
 $('posMode').onclick=function(){if(confirm('Put the servo in position mode 0 (saved in the servo)? Torque goes off, the position count may reset and the limits are cleared.'))post('/api/servo/positionMode')};
 $('calMid').onclick=function(){if(confirm('Make the present position the servo middle (Waveshare calibration)? Torque goes off, all positions shift and the limits are cleared.'))post('/api/servo/calibrateMiddle')};
