@@ -4,7 +4,9 @@
 
 **Goal:** See the object with the three SEN0628, measure width / size class / coarse shape, move the fingertips to a stand-off from it at full speed, close slowly to contact and more slowly to the class's target force; show class, shape and contact pattern on the dashboard.
 
-**Architecture:** New pure, host-tested modules do the maths (`object_core`: object points → width/class/shape; `contact_core`: wrap/pinch pattern; `sweep_core` gains opening → position inversion and per-position background). The FSM consumes a ready-made `GraspPlan` in `FsmInputs` (built by `control.cpp` from the measurement, the class profile, the operator's RAM-only override/delicate switches) and latches it when it leaves START. Web/UI only display and set.
+**Architecture:** New pure, host-tested modules do the maths (`object_core`: object points → width/class/shape + 300 ms smoothing; `plan_core`: measurement + profile + override/delicate → `GraspPlan`; `contact_core`: wrap/pinch pattern; `sweep_core` gains opening → position inversion and per-position background). The FSM consumes the ready-made `GraspPlan` in `FsmInputs` and latches it when it leaves START. `control.cpp` only wires snapshots into these functions. Web/UI only display and set.
+
+**Decisions that differ from or add to the spec** (operator to confirm): default `maxForceN` 3 → 8 N (large class is 4 N); START aborts when nothing is measured and no override/delicate is set; Delicate alone counts as an override (no measurement needed, no fast approach); APPROACH also ends after 400 ms without progress (the servo stops short of goals on this mechanism); a RAM-only **Approach only** switch stops in MONITOR at the pre-touch position, to check the stand-off with a ruler before any real grasp.
 
 **Tech Stack:** Arduino-ESP32 3.x (C++17), FreeRTOS tasks, LittleFS, Preferences/NVS; host tests with g++ (`make -C tests`, `tests/check.h`); CI `.github/workflows/build.yml` compiles esp32s3 (huge_app) and runs host tests.
 
@@ -31,6 +33,8 @@
 3. **Class flickers at a boundary** during START: START waits for 300 ms of one class and gives up after 3 s with "object size not stable"; disarms. Test in Task 5.
 4. **Class target force ≥ maxForceN** (default 3 N vs large 4 N): config refuses the save with a named reason, and default `maxForceN` becomes 8 N. Test in Task 1.
 5. **One SEN0628 offline in START:** measurement uses the remaining sensors (width from those that see the object); shape is "unknown" with fewer than two sensors. Test in Task 2.
+6. **Stored (v6) config with Max force 3 N:** loads unchanged (a safety limit is never raised silently); START aborts with "large target force 4.0 N is not below Max force 3.0 N - raise Max force (FSR tab)", and config saves are refused with the same reason until it is raised. Tests in Tasks 1 and 5.
+7. **Servo stops short of the approach goal:** APPROACH → SLOW after 400 ms without 5 counts of progress. Test in Task 5.
 
 ---
 
@@ -57,6 +61,7 @@
 - [ ] **Step 2:** `make -C tests` → FAIL (missing fields).
 - [ ] **Step 3: Implement.** Defaults per Global Constraints; `maxForceN` default 3.0 → 8.0. Clamp ranges: thresholds 20..250; standoff 0..50 mm; force 0.1..30 N; maxCurrent 50..415; graspSpeed and contactSpeed 1..`SPEED_MAX`. `profileProblem`: smallMaxMm < mediumMaxMm; each profile `forceN > contactForceN` and `forceN < maxForceN` (message names the class, e.g. "large target force must be below Max force N"). `config.cpp`: `CFG_VERSION 7`; v6 blobs load with `stored = GRIP_CONFIG_V6_BLOB_SIZE`, `keep = GRIP_CONFIG_V6_SIZE` (new fields keep defaults). Web `CONFIG` handling in `control.cpp` refuses a config whose `profileProblem` is non-null (`say(c,false,"config refused: %s",...)`). Add the 19 new fields to the `F_` table in `web.cpp` (types `T_U16`/`T_F`).
 - [ ] **Step 4:** `make -C tests` → all pass.
+  - `config_v6_migrated_max_force`: defaults with `maxForceN = 3` (a migrated v6 config) → `profileProblem` contains "large" and "Max force".
 - [ ] **Step 5: Commit** `feat: config v7 class thresholds and grasp profiles`.
 
 ### Task 2: `object_core` — object points, width, class, shape
@@ -85,6 +90,13 @@
                               const uint16_t background[3][64], const uint64_t fingerZones[3],
                               const SensorCalib cal[3]);
   ObjClass classify(float widthMm, uint16_t smallMaxMm, uint16_t mediumMaxMm);  // never DELICATE
+  // Spec 7.2 smoothing: mean width/range/height of the valid measures of the last 300 ms
+  // (ring of 16 timestamped entries); shape/zones from the newest. valid when >= 2 valid
+  // measures fall inside the window.
+  struct ObjectSmoother { ObjectMeasure m[16]; uint32_t t[16]; uint8_t head, n; };
+  void smootherReset(ObjectSmoother&);
+  void smootherAdd(ObjectSmoother&, const ObjectMeasure&, uint32_t nowMs);
+  ObjectMeasure smoothed(const ObjectSmoother&, uint32_t nowMs);
   const char* shapeName(Shape); const char* className(ObjClass);
   ```
 - Rules (spec §7.1/7.2): zone is an object point when not a finger zone, reading in 1..3999, and (background 0 or reading < background − max(15, 0.2·background)); the 3-D point (raw zone → display row/col via `zoneSourceIndex` and `cal[s].orientation`, as `sweep_core`'s `rawToDisplay`) must have `horizontalRadius ≤ 100` and `z > 5`. Classify with the 10 % band: `w >= 0.9*mediumMax` → LARGE, else `w >= 0.9*smallMax` → MEDIUM, else SMALL. Shape: < 2 sensors with radius → UNKNOWN; `heightMm >= 1.8*widthMm` → ELONGATED; max/min of the sensor radii ≤ 1.25 → ROUND; else IRREGULAR.
@@ -97,6 +109,7 @@
   - `object_elongated`: R = 15, z 10..200 → `shape == ELONGATED` (only if `heightMm ≥ 1.8·width`; assert the heightMm/width ratio first).
   - `object_one_sensor_offline`: R = 30 with `frameValid = 0b011` → `valid`, `isnan(sensorRadiusMm[2])`, width still within ±10 of 60; with `0b001` → `shape == UNKNOWN`.
   - `object_ignores_finger_zones`: mark every zone of sensor 0 as finger zone → `zones[0] == 0`.
+  - `object_smoothing_window`: add widths 50, 60, 70 at t = 0, 100, 200 → `smoothed(…,250).widthMm == 60`; at t = 450 only the 200 ms entry is inside → `!valid`; invalid measures are ignored.
 - [ ] **Step 2:** `make -C tests` → FAIL (no `object_core.h`).
 - [ ] **Step 3: Implement** `object_core.cpp` per the rules above (median via a small local array + `std::nth_element`).
 - [ ] **Step 4:** `make -C tests` → pass. If the cylinder widths miss ±10 mm, check the raw↔display mapping before widening the tolerance.
@@ -165,13 +178,14 @@
     int32_t approachGoal;// logical position (from positionForOpening)
     ClassProfile prof;
   };
-  // FsmInputs += GraspPlan plan; const char* planWhy (reason when !plan.valid).
+  // FsmInputs += GraspPlan plan; const char* planWhy (reason when !plan.valid); bool approachOnly.
   enum class PreTouchStep : uint8_t { APPROACH, SLOW };
   PreTouchStep Fsm::preTouchStep() const; const GraspPlan& Fsm::plan() const;  // latched plan
   ```
 - Behaviour:
   - START: if `!in.plan.valid` → keep waiting; track `classSinceMs_` reset whenever `in.plan.cls` changes or plan invalid; leave START when the plan has been valid with the same class for ≥ 300 ms (`START_STABLE_MS`), latching `plan_`. After 3000 ms (`START_TIMEOUT_MS`) without that: disarm, IDLE, reason `"Start aborted: <planWhy>"` if the plan was never valid, else `"Start aborted: object size not stable"`. Blockers and disarm checks stay first.
-  - PRE_TOUCH entry: if `plan_.approach` and the goal is on the closing side of the present position by more than `openToleranceCounts` → step APPROACH, `MOVE` to `approachGoal` at `approachSpeed`, `plan_.prof.maxCurrent`; else step SLOW, `RUN` at `contactSpeed`, `plan_.prof.maxCurrent`. In APPROACH, `|position − goal| ≤ openToleranceCounts` → step SLOW with `RUN contactSpeed` (reason "pre-touch position reached: slow to contact"). Contact in either step → GRASP. Close-limit and timeout checks unchanged (whole PRE_TOUCH).
+  - PRE_TOUCH entry: if `plan_.approach` and the goal is on the closing side of the present position by more than `openToleranceCounts` → step APPROACH, `MOVE` to `approachGoal` at `approachSpeed`, `plan_.prof.maxCurrent`; else step SLOW, `RUN` at `contactSpeed`, `plan_.prof.maxCurrent`. In APPROACH, arrival = `|position − goal| ≤ openToleranceCounts`, **or** no progress (position changed < 5 counts) for 400 ms (`APPROACH_STALL_MS`). On arrival: if `in.approachOnly` → MONITOR (HOLD) with reason "approach only: stopped at pre-touch position"; else step SLOW with `RUN contactSpeed` (reason "pre-touch position reached: slow to contact").
+  - Plan force check at the START → PRE_TOUCH transition: `plan_.prof.forceN >= cfg_.maxForceN` → disarm, IDLE, reason `"Start aborted: <class> target force X N is not below Max force Y N - raise Max force (FSR tab)"`. Contact in either step → GRASP. Close-limit and timeout checks unchanged (whole PRE_TOUCH).
   - GRASP: `RUN` at `plan_.prof.graspSpeed`, `plan_.prof.maxCurrent`; `graspReached` uses `plan_.prof.forceN` (not `cfg_.graspForceN`). MONITOR HOLD unchanged.
 - [ ] **Step 1: Update helpers and write failing tests.** In `test_fsm.cpp`, `ready()` sets `in.plan = {true, ObjClass::MEDIUM, false, 0, {10, 2.0f, 260, 10}}`; `preTouchFsm(t0)` steps START at t0 and t0+300. New tests:
   - `fsm_start_waits_for_stable_class` — class alternates SMALL/MEDIUM every 100 ms → still START at 2900; at 3000 → IDLE, `!armed()`, reason contains "not stable".
@@ -181,11 +195,35 @@
   - `fsm_contact_during_approach_goes_grasp` — contact before goal → GRASP, action `RUN` speed `prof.graspSpeed`.
   - `fsm_grasp_uses_class_force` — prof.forceN 1.0, avg 1.2 N, 2 channels, `graspSamples` new samples → MONITOR; with `cfg.graspForceN = 5` unchanged result.
   - `fsm_delicate_grasp_speed` — plan cls DELICATE prof `{15,0.4,150,3}` → GRASP action speed 3, torque 150.
+  - `fsm_approach_stall_goes_slow` — goal 9000, position stays 8700 from t to t+400 → action `RUN` speed 15, step SLOW.
+  - `fsm_approach_only_stops` — `approachOnly=true`, reach the goal → MONITOR, reason contains "approach only".
+  - `fsm_start_refuses_force_above_max` — `cfg.maxForceN = 3`, plan prof.forceN 4 → after 300 ms stable: IDLE, `!armed()`, reason contains "Max force".
   Adapt existing tests that assumed START → PRE_TOUCH in one step, or `approachSpeed`/`graspSpeed` actions, to the plan values.
 - [ ] **Step 2:** `make -C tests` → new tests FAIL.
 - [ ] **Step 3: Implement** in `fsm_core.cpp`.
 - [ ] **Step 4:** `make -C tests` → all pass.
 - [ ] **Step 5: Commit** `feat: FSM grasp plan, stable START, fast approach then slow contact`.
+
+### Task 5b: `plan_core` — measurement → GraspPlan
+
+**Files:**
+- Create: `SenseGrip/plan_core.h`, `SenseGrip/plan_core.cpp`
+- Test: `tests/test_plan.cpp`
+
+**Interfaces:**
+- Consumes: `ObjectMeasure`, `classify` (Task 2), `positionForOpening` (Task 3), `profileOf` (Task 1), `GraspPlan` (Task 5).
+- Produces:
+  ```cpp
+  enum class Override : uint8_t { AUTO = 0, SMALL, MEDIUM, LARGE };
+  struct PlanResult { GraspPlan plan; ObjClass detected; bool detectedValid; const char* why; };
+  // m/s null when no sweep is stored. position: present logical position.
+  PlanResult buildPlan(const GripConfig& cfg, bool homed, const SweepModel* m, const SweepSample* s,
+                       const ObjectMeasure& smoothedObj, Override ov, bool delicate, int32_t position);
+  ```
+- Rules: class = DELICATE if `delicate`, else the override class if not AUTO, else `classify(width)`. `valid` = (homed && sweep && obj.valid) || ov != AUTO || delicate. `approach` = homed && sweep && obj.valid. `approachGoal = positionForOpening(m, s, position, width/2 + prof.standoffMm + 0.1*rangeMm)`, then limited so it never lies beyond `closeLimit` in the closing direction. `why` when invalid: "not homed" / "no sweep stored" / "object not measured (no points in view)", checked in that order.
+- [ ] **Step 1: Failing tests** (synthetic sweep as in `test_sweep.cpp`, measure built by hand): `plan_auto_measured` (width 60 → MEDIUM, approach, `openingAt(goal)` ≈ 30 + 10 + 0.1·range within 1 mm); `plan_override_without_measure` (obj invalid, ov LARGE → valid, cls LARGE, `!approach`); `plan_delicate_beats_override` (ov LARGE + delicate → DELICATE, profile 15/0.4/150/3); `plan_invalid_reasons` (each `why` in order); `plan_goal_never_past_close_limit` (tiny object → goal == closeLimit); `plan_goal_behind_returns_position` (object wider than the present opening → goal == position).
+- [ ] **Step 2–4:** FAIL → implement → pass.
+- [ ] **Step 5: Commit** `feat: grasp plan from measurement, profile, override and delicate`.
 
 ### Task 6: Control glue, background capture, web API
 
@@ -200,10 +238,10 @@
   - `ControlStatus` += `ObjectMeasure obj; uint8_t objClsDetected; uint8_t objClsEffective; bool objForced, delicate; uint8_t pattern; bool patternOk; uint8_t firstContact[3]; uint8_t preTouchStep;`.
 - Behaviour:
   - On each new ToF frame set (any `ok` counter changed) and `sweepLoaded() && homed`: `backgroundAt(... sv.fb.position, bgDelta() ...)`, `measureObject(...)`, store in `c.obj`. Not homed / no sweep → `obj.valid=false`, `planWhy` "no sweep / not homed".
-  - Build `GraspPlan` each loop: effective class = DELICATE if delicate, else override if set, else `classify(width)`; `valid` = measured or override; `approach` = measured && sweep loaded; `approachGoal = positionForOpening(model, samples, position, width/2 + standoff + 0.1*rangeMm)` clamped to the close side of `closeLimit` (never past it). `planWhy`: "object not measured (no points in view)" / "no sweep stored" / "not homed".
+  - Feed each measurement into an `ObjectSmoother` (reset when the FSM enters START); call `buildPlan` (Task 5b) every loop with `smoothed(...)`, the RAM `Override`/`delicate`, and pass `plan`, `why` and the RAM `approachOnly` switch into `FsmInputs`.
   - `CAPTURE_BACKGROUND`: refused unless IDLE, homed, sweep loaded, no FSR contact; delta = frame − nearest-sample frame for non-finger zones where both are valid (else 0); save; `say` with the number of zones changed.
   - Contact pattern: reset `firstContact` on START entry; update during PRE_TOUCH/GRASP from proximal/distal FSR contact (enabled channels, `contactForceN`).
-  - Web: `POST /api/object/override?cls=auto|small|medium|large`, `POST /api/object/delicate?on=0|1`, `POST /api/object/captureBackground`; status JSON adds `"object":{valid,width,range,height,shape,cls,clsDetected,forced,delicate,zones:[hex×3],pattern,patternOk,first:[..],step}` and `fsm.preTouchStep`.
+  - Web: `POST /api/object/override?cls=auto|small|medium|large`, `POST /api/object/delicate?on=0|1`, `POST /api/object/approachOnly?on=0|1`, `POST /api/object/captureBackground`; status JSON adds `"object":{valid,width,range,height,shape,cls,clsDetected,forced,delicate,zones:[hex×3],pattern,patternOk,first:[..],step}` and `fsm.preTouchStep`.
 - [ ] **Step 1:** Implement; `make -C tests` still passes (no pure code changed here).
 - [ ] **Step 2:** Push and check CI compiles esp32s3 (`build` workflow green).
 - [ ] **Step 3: Commit** `feat: object measurement, grasp plan and background capture in the control task`.
@@ -213,7 +251,7 @@
 **Files:**
 - Modify: `SenseGrip/web_pages.h`
 
-- [ ] **Step 1: SEN0628 tab** — panel "Object classification": detected width / range / height / shape / class (live); class thresholds and the four profiles (config fields from Task 1, saved via the existing config POST, errors shown from the reply); Override select (auto/small/medium/large) and Delicate checkbox (RAM-only, label "not kept after restart"); Capture background button (confirm "gripper empty, nothing in view?"). Object zones (`object.zones`) outlined in a distinct colour on the 8×8 heatmaps, next to the finger-zone outlines.
+- [ ] **Step 1: SEN0628 tab** — panel "Object classification": detected width / range / height / shape / class (live); class thresholds and the four profiles (config fields from Task 1, saved via the existing config POST, errors shown from the reply); Override select (auto/small/medium/large), Delicate and Approach only checkboxes (RAM-only, label "not kept after restart"); Capture background button (confirm "gripper empty, nothing in view?"). Object zones (`object.zones`) outlined in a distinct colour on the 8×8 heatmaps, next to the finger-zone outlines.
 - [ ] **Step 2: Combined tab** — class, width mm, shape; badges "DELICATE" and "CLASS: LARGE (forced)" when set, detected class beside it; PRE_TOUCH step ("approach"/"slow"); contact pattern with per-finger first contact and a ✓/⚠ consistency mark.
 - [ ] **Step 3:** Remove `graspForceN` from the FSR config list (class profiles replace it; the field stays in `GripConfig`).
 - [ ] **Step 4:** Push; CI green. **Commit** `feat: classification settings and object view on the dashboards`.
@@ -224,5 +262,5 @@
 - Modify: `README.md`, `docs/HARDWARE_CHECKLIST.md`
 
 - [ ] **Step 1:** README section "Object perception and grasp": what the classes mean, stand-off rule (x + 10 % of range), override / delicate (RAM-only), capture background, START refusal reasons, the new default `maxForceN` 8 N (stored configs keep their old value: raise it to above the large-class force).
-- [ ] **Step 2:** Checklist steps 24–30: capture background; width of each demo object (egg, tube, mug, apple, drill handle, asymmetric) noted against a ruler; class and shape shown; START refusal with nothing measurable; a grasp per class showing "approach" then "slow" and stopping at the class force; delicate egg grasp; drill with override LARGE; contact pattern wrap vs pinch.
+- [ ] **Step 2:** Checklist steps 24–31. **First, before any real grasp:** check the sweep opening table (`/api/sweep`, dashed/solid plot) and run an **Approach only** grasp on a rigid object (tube or mug): with a ruler, the fingertip gap must be about x mm + 10 % of the range, not touching. Then: capture background; width of each demo object (egg, tube, mug, apple, drill handle, asymmetric) noted against a ruler; class and shape shown; START refusal with nothing measurable; a grasp per class showing "approach" then "slow" and stopping at the class force; delicate egg grasp; drill with override LARGE; contact pattern wrap vs pinch.
 - [ ] **Step 3: Commit** `docs: phase 3 usage and hardware checklist`.
