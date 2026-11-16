@@ -146,3 +146,27 @@ TEST(config_v7_fields_clamped) {
   CHECK_NEAR(c.mediumStandoffMm, 50.0f, 1e-6);
   CHECK_EQ(c.contactSpeed, SPEED_MAX);
 }
+
+// ---- v8: sweep settings ----
+TEST(config_v8_sweep_defaults) {
+  GripConfig c = defaultConfig();
+  CHECK_EQ(c.sweepStepCounts, (uint16_t)100);
+  CHECK_EQ(c.sweepSpeed, (uint16_t)5);
+  CHECK_EQ(c.sweepCurrent, (uint16_t)0);                  // 0 = use Close max current
+  CHECK(!clampConfig(c));
+}
+TEST(config_v8_sweep_clamped) {
+  GripConfig c = defaultConfig();
+  c.sweepStepCounts = 10; c.sweepSpeed = 99; c.sweepCurrent = 999;
+  CHECK(clampConfig(c));
+  CHECK_EQ(c.sweepStepCounts, (uint16_t)60);              // SWEEP_MAX samples must cover ~13 000 counts
+  CHECK_EQ(c.sweepSpeed, (uint16_t)20);
+  CHECK_EQ(c.sweepCurrent, (uint16_t)415);
+  c.sweepCurrent = 20; clampConfig(c);
+  CHECK_EQ(c.sweepCurrent, (uint16_t)50);
+  c.sweepCurrent = 0; CHECK(!clampConfig(c));
+}
+TEST(config_v7_size_constants) {
+  CHECK_EQ((unsigned)GRIP_CONFIG_V7_SIZE, (unsigned)offsetof(GripConfig, sweepStepCounts));
+  CHECK_EQ((unsigned)GRIP_CONFIG_V7_BLOB_SIZE, 168u);      // sizeof(GripConfig) of the v7 build (measured)
+}

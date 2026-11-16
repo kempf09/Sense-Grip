@@ -284,8 +284,8 @@ void homeUpdate(Ctl& c, uint32_t now) {
 }
 
 // ---- Calibration sweep (spec §6.3) ----
-constexpr uint16_t SWEEP_SPEED = 5;
-constexpr int32_t SWEEP_STEP = 100;
+// Step, speed and current come from the config (sweepStepCounts / sweepSpeed / sweepCurrent).
+uint16_t sweepCurrentOf(const GripConfig& g) { return g.sweepCurrent ? g.sweepCurrent : g.closeTorqueLimit; }
 constexpr uint32_t SWEEP_TIMEOUT_MS = 400000, SWEEP_FRAME_WAIT_MS = 1000, SWEEP_MOVE_WAIT_MS = 5000;
 enum : uint8_t { SW_TO_OPEN = 0, SW_MOVE, SW_FRAMES };
 
@@ -374,7 +374,7 @@ void sweepUpdate(Ctl& c, uint32_t now) {
         c.swPhase = SW_FRAMES; c.swPhaseMs = now;
         const TofSnapshot t = tofGet();
         for (int s = 0; s < 3; s++) c.swOk[s] = t.s[s].ok;
-        say(c, true, "Sweep: recording");
+        say(c, true, "Sweep: recording (step %u counts, speed %u, current %u)", (unsigned)c.cfg.sweepStepCounts, (unsigned)c.cfg.sweepSpeed, (unsigned)sweepCurrentOf(c.cfg));
       } else if ((uint32_t)(now - c.swPhaseMs) >= 30000) sweepStop(c, false, "aborted: OPEN zero not reached");
       return;
     }
@@ -384,8 +384,8 @@ void sweepUpdate(Ctl& c, uint32_t now) {
       for (int s = 0; s < 3; s++) if (t.s[s].online && t.s[s].ok < c.swOk[s] + 2) fresh = false;
       if (!fresh && (uint32_t)(now - c.swPhaseMs) < SWEEP_FRAME_WAIT_MS) return;
       sweepRecord(c, sv);
-      c.swTarget = sv.fb.position + dir * SWEEP_STEP;
-      if (!servoMoveTo(c.swTarget, SWEEP_SPEED, c.cfg.closeTorqueLimit)) { sweepStop(c, false, "servo command failed"); return; }
+      c.swTarget = sv.fb.position + dir * (int32_t)c.cfg.sweepStepCounts;
+      if (!servoMoveTo(c.swTarget, c.cfg.sweepSpeed, sweepCurrentOf(c.cfg))) { sweepStop(c, false, "servo command failed"); return; }
       c.swStepStart = sv.fb.position; c.swProgPos = sv.fb.position; c.swProgMs = now;
       c.swPhase = SW_MOVE; c.swPhaseMs = now;
       return;
@@ -398,7 +398,8 @@ void sweepUpdate(Ctl& c, uint32_t now) {
         // No progress for 0.5 s. If the jaw got part of the way, record it where it stopped (the
         // samples only need increasing positions); if it did not move at all, stop and say why.
         const int32_t moved = sv.fb.position - c.swStepStart;
-        if (moved >= 30 || moved <= -30) arrived = true;
+        const int32_t part = (int32_t)c.cfg.sweepStepCounts / 3;   // a third of a step counts as a step
+        if (moved >= part || moved <= -part) arrived = true;
         else if ((uint32_t)(now - c.swPhaseMs) >= SWEEP_MOVE_WAIT_MS) {
           char why[96];
           snprintf(why, sizeof why, "stopped at %ld, %ld short, %d mA, load %.0f%%, no tip contact",

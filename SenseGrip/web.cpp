@@ -278,6 +278,7 @@ static const Field FIELDS[] = {
   F_(mediumStandoffMm, T_F), F_(mediumForceN, T_F), F_(mediumMaxCurrent, T_U16), F_(mediumGraspSpeed, T_U16),
   F_(largeStandoffMm, T_F), F_(largeForceN, T_F), F_(largeMaxCurrent, T_U16), F_(largeGraspSpeed, T_U16),
   F_(delicateStandoffMm, T_F), F_(delicateForceN, T_F), F_(delicateMaxCurrent, T_U16), F_(delicateGraspSpeed, T_U16),
+  F_(sweepStepCounts, T_U16), F_(sweepSpeed, T_U16), F_(sweepCurrent, T_U16),
   { "tofMask0", T_MASK, offsetof(GripConfig, tofMask), 0 },
   { "tofMask1", T_MASK, offsetof(GripConfig, tofMask), 1 },
   { "tofMask2", T_MASK, offsetof(GripConfig, tofMask), 2 },

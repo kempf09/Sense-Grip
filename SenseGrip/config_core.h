@@ -37,6 +37,9 @@ struct GripConfig {
   float mediumStandoffMm, mediumForceN;     uint16_t mediumMaxCurrent, mediumGraspSpeed;
   float largeStandoffMm, largeForceN;       uint16_t largeMaxCurrent, largeGraspSpeed;
   float delicateStandoffMm, delicateForceN; uint16_t delicateMaxCurrent, delicateGraspSpeed;
+  // v8: calibration sweep settings. step counts per sample (60..500), speed (1..20), max current
+  // (0 = use closeTorqueLimit, else 50..415).
+  uint16_t sweepStepCounts, sweepSpeed, sweepCurrent;
 };
 
 enum class ObjClass : uint8_t { SMALL = 0, MEDIUM = 1, LARGE = 2, DELICATE = 3 };
@@ -61,6 +64,10 @@ constexpr unsigned GRIP_CONFIG_V5_BLOB_SIZE =
 constexpr unsigned GRIP_CONFIG_V6_SIZE = __builtin_offsetof(GripConfig, smallMaxMm);
 constexpr unsigned GRIP_CONFIG_V6_BLOB_SIZE =
     (GRIP_CONFIG_V6_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
+// Version 7 held the fields before sweepStepCounts; its stored blob was padded to the struct alignment.
+constexpr unsigned GRIP_CONFIG_V7_SIZE = __builtin_offsetof(GripConfig, sweepStepCounts);
+constexpr unsigned GRIP_CONFIG_V7_BLOB_SIZE =
+    (GRIP_CONFIG_V7_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
 // The FSR filter settings as FilterParams.
 FilterParams filterParamsOf(const GripConfig& c);
 // Clamps every field into range; returns true if anything changed.

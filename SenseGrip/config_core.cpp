@@ -23,6 +23,7 @@ GripConfig defaultConfig() {
   c.mediumStandoffMm = 10;   c.mediumForceN = 2.0f;   c.mediumMaxCurrent = 260;   c.mediumGraspSpeed = 5;
   c.largeStandoffMm = 10;    c.largeForceN = 4.0f;    c.largeMaxCurrent = 350;    c.largeGraspSpeed = 5;
   c.delicateStandoffMm = 15; c.delicateForceN = 0.4f; c.delicateMaxCurrent = 150; c.delicateGraspSpeed = 3;
+  c.sweepStepCounts = 100; c.sweepSpeed = 5; c.sweepCurrent = 0;
   return c;
 }
 
@@ -79,6 +80,9 @@ bool clampConfig(GripConfig& c) {
                    {&c.mediumStandoffMm, &c.mediumForceN, &c.mediumMaxCurrent, &c.mediumGraspSpeed, d.mediumStandoffMm, d.mediumForceN},
                    {&c.largeStandoffMm, &c.largeForceN, &c.largeMaxCurrent, &c.largeGraspSpeed, d.largeStandoffMm, d.largeForceN},
                    {&c.delicateStandoffMm, &c.delicateForceN, &c.delicateMaxCurrent, &c.delicateGraspSpeed, d.delicateStandoffMm, d.delicateForceN}};
+  ch |= clampInt(c.sweepStepCounts, 60, 500);
+  ch |= clampInt(c.sweepSpeed, 1, 20);
+  if (c.sweepCurrent != 0) ch |= clampInt(c.sweepCurrent, 50, 415);
   for (const P& p : ps) {
     ch |= clampF(*p.st, 0.0f, 50.0f, p.dst);
     ch |= clampF(*p.f, 0.1f, 30.0f, p.df);
