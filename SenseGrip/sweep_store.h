@@ -18,4 +18,12 @@ bool tofCalibLoad(SensorCalib out[3]);
 // view and the sweep, added to the sweep's background. RAM (zero by default), LittleFS /bgdelta.bin,
 // loaded by sweepStoreBegin, cleared when a new sweep is committed.
 const int16_t (*bgDelta())[64];
+// Operator edits of the opening curve (NAN = not edited), kept in LittleFS /opening.bin for the
+// stored sweep (matched by sample count and touch reference), cleared by a new sweep.
+// openingAuto(): the analysed values before edits (for the dashboard).
+const float* openingEdits();
+const float* openingAuto();
+// i: sample index; mm: new opening, or NAN to undo that edit. i < 0 clears every edit.
+// Returns nullptr on success, else the reason.
+const char* openingEditSet(int i, float mm);
 bool bgDeltaSave(const int16_t d[3][64]);      // false (defaults returned) when senCal2 is missing

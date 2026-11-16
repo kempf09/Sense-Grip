@@ -422,6 +422,12 @@ static void handleSweepGet() {
   for (int i = 0; i < n; i++) { snprintf(b, sizeof b, i ? ",%ld" : "%ld", (long)s[i].pos); server.sendContent(b); }
   server.sendContent("],\"opening\":[");
   for (int i = 0; i < n; i++) { snprintf(b, sizeof b, i ? ",%.1f" : "%.1f", (double)m.opening[i]); server.sendContent(b); }
+  server.sendContent("],\"auto\":[");
+  const float* au = openingAuto();
+  for (int i = 0; i < n; i++) { snprintf(b, sizeof b, i ? ",%.1f" : "%.1f", (double)au[i]); server.sendContent(b); }
+  server.sendContent("],\"edited\":[");
+  const float* ed = openingEdits();
+  for (int i = 0; i < n; i++) server.sendContent(i ? (ed[i] == ed[i] ? ",1" : ",0") : (ed[i] == ed[i] ? "1" : "0"));
   server.sendContent("],\"fingerZones\":[");
   for (int k = 0; k < 3; k++) {
     snprintf(b, sizeof b, "%s\"%016llx\"", k ? "," : "", (unsigned long long)(n ? m.fingerZones[k] : 0));
@@ -450,6 +456,20 @@ static void simple(ControlRequest::Kind k) { sendQueued(blankReq(k)); }
 static void onOff(ControlRequest::Kind k) {
   ControlRequest r = blankReq(k);
   r.value = (server.hasArg("on") && server.arg("on") == "1") ? 1 : 0;
+  sendQueued(r);
+}
+// ?i=<sample>&mm=<opening mm> sets a point; mm omitted or "none" undoes that point; i=-1 clears all.
+static void handleOpeningEdit() {
+  long long i;
+  if (!server.hasArg("i") || !parseI(server.arg("i"), -1, SWEEP_MAX - 1, i)) { sendError(400, "i must be -1..259"); return; }
+  ControlRequest r = blankReq(ControlRequest::EDIT_OPENING);
+  r.index = (int16_t)i; r.mm = NAN;
+  if (i >= 0 && server.hasArg("mm") && server.arg("mm") != "none") {
+    char* end = nullptr;
+    const double v = strtod(server.arg("mm").c_str(), &end);
+    if (!end || *end != 0 || !(v >= 0 && v <= 250)) { sendError(400, "mm must be 0..250"); return; }
+    r.mm = (float)v;
+  }
   sendQueued(r);
 }
 // ?cls=auto|small|medium|large
@@ -481,6 +501,7 @@ void webBegin() {
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/tof", HTTP_GET, handleTof);
   server.on("/api/object/override", HTTP_POST, handleOverride);
+  server.on("/api/sweep/opening", HTTP_POST, handleOpeningEdit);
   server.on("/api/object/delicate", HTTP_POST, [] { onOff(ControlRequest::SET_DELICATE); });
   server.on("/api/object/approachOnly", HTTP_POST, [] { onOff(ControlRequest::SET_APPROACH_ONLY); });
   server.on("/api/object/captureBackground", HTTP_POST, [] { simple(ControlRequest::CAPTURE_BACKGROUND); });

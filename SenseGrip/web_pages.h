@@ -100,8 +100,12 @@ select{width:auto;min-width:150px;display:block}
    <div class="btns"><button class="b pri" id="bHome2">Home (close to touch)</button><button class="b" id="bSweep">Run calibration sweep</button></div>
    <p class="small" id="swTxt">Calibration sweep: -</p>
    <p class="small">Home: gripper empty; the fingers close slowly until a fingertip pad touches, then open. Sweep (first-time setup, or after mechanical changes): gripper empty and nothing in the SEN0628 view; records the sensors from OPEN zero to touch.</p>
-   <canvas id="swChart" style="aspect-ratio:auto;height:220px"></canvas>
-   <p class="small">Fingertip opening (mm from the gripper axis) vs motor position, from the stored sweep.</p></div>
+   <canvas id="swChart" style="aspect-ratio:auto;height:220px;touch-action:none;cursor:crosshair"></canvas>
+   <p class="small">Fingertip opening (mm from the gripper axis) vs motor position, from the stored sweep. Drag a point up/down to correct it (orange = edited; grey = analysed value). Edits are saved with the sweep and cleared by a new sweep.</p>
+   <div class="row"><span class="small" id="swSel">No point selected</span>
+    <input type="number" step="0.1" min="0" max="250" id="swMm" style="width:80px"><button class="b" id="swSet">Set</button>
+    <button class="b" id="swUndo">Undo point</button><button class="b" id="swClr">Clear all edits</button></div>
+   <h2 style="margin-top:12px">Sweep settings</h2><div class="cfg" id="swCfg"></div><button class="b pri" id="swSave">Save sweep settings</button></div>
  </div>
  <div class="panel"><h2>Config</h2><div class="cfg" id="svCfg"></div><button class="b pri" id="svSave">Save</button></div>
 </section>
@@ -295,6 +299,7 @@ var FORMS={
  svCfg:[['approachSpeed','Approach speed (1-61, x0.732 RPM)'],['graspSpeed','Grasp speed (1-61, x0.732 RPM)'],['openSpeed','Open speed (1-61, x0.732 RPM)'],['closeTorqueLimit','Close max current (x6.5 mA)'],['openTorqueLimit','Open max current (x6.5 mA)'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['closePositive','Close = positive','b']],
  fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
  tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']],
+ swCfg:[['sweepStepCounts','Step counts per sample (60-500)'],['sweepSpeed','Sweep speed (1-20)'],['sweepCurrent','Sweep max current (x6.5 mA, 0 = Close max current)']],
  objCfg:[['smallMaxMm','Small below width mm'],['mediumMaxMm','Medium below width mm'],['contactSpeed','Slow-to-contact speed (1-61)'],
   ['smallStandoffMm','Small: stand-off mm'],['smallForceN','Small: target force N'],['smallMaxCurrent','Small: max current (x6.5 mA)'],['smallGraspSpeed','Small: grasp speed'],
   ['mediumStandoffMm','Medium: stand-off mm'],['mediumForceN','Medium: target force N'],['mediumMaxCurrent','Medium: max current (x6.5 mA)'],['mediumGraspSpeed','Medium: grasp speed'],
@@ -336,6 +341,7 @@ function saveForm(id,extra){
   post('/api/config',o).then(function(j){if(j){toast('Saved (queued)');setTimeout(loadCfg,500)}});
 }
 $('svSave').onclick=function(){saveForm('svCfg')};
+$('swSave').onclick=function(){saveForm('swCfg')};
 $('objSave').onclick=function(){saveForm('objCfg')};
 $('objOv').onchange=function(){post('/api/object/override?cls='+this.value)};
 $('objDel').onchange=function(){post('/api/object/delicate?on='+(this.checked?1:0))};
@@ -444,21 +450,47 @@ function renderHome(){var H=S.home||{};
   $('swTxt').textContent='Calibration sweep: '+(H.sweeping?('recording, '+H.sweepN+' samples'):(H.sweepLoaded?'stored':'none yet - run it once'));
   if(swWas&&!H.sweeping)loadSweep();swWas=!!H.sweeping;}
 function loadSweep(){getJ('/api/sweep').then(function(j){SW=j;FZ=(j.fingerZones||['0','0','0']).map(function(h){return BigInt('0x'+h)});drawSweep()}).catch(function(){})}
+var SWG=null,swSel=-1,swDrag=false,swMoved=false;
 function drawSweep(){var c=$('swChart');if(!c||!c.clientWidth)return;var dpr=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
   c.width=w*dpr;c.height=h*dpr;var g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
   g.fillStyle='#8a96a3';g.font='11px system-ui';
   if(!SW||!SW.n){g.fillText('no sweep stored',10,20);return}
   var P=SW.positions,O=SW.opening,x0=Math.min(SW.openZero,P[0],P[P.length-1]),x1=Math.max(SW.openZero,P[0],P[P.length-1]),
       ymax=Math.max.apply(null,O.concat([175])),L=40,B=20,X=function(v){return L+(w-L-8)*(v-x0)/((x1-x0)||1)},Y=function(v){return h-B-(h-B-8)*v/ymax};
+  SWG={X:X,Y:Y,h:h,B:B,ymax:ymax};
   g.strokeStyle='#26313d';for(var t=0;t<=4;t++){var v=ymax*t/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(w-8,y);g.stroke();g.fillText(v.toFixed(0),4,y+4)}
   g.fillText(String(x0),L,h-4);g.fillText(String(x1),w-60,h-4);
   var fs=SW.firstSeen>=0?SW.firstSeen:P.length;g.strokeStyle='#4ea1ff';g.lineWidth=2;
   g.setLineDash([5,4]);g.beginPath();P.forEach(function(p,i){if(i>fs)return;var x=X(p),y=Y(O[i]);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
   g.setLineDash([]);g.beginPath();P.forEach(function(p,i){if(i<fs)return;var x=X(p),y=Y(O[i]);i>fs?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();g.lineWidth=1;
   g.fillStyle='#8a96a3';g.fillText('dashed: fingers not seen (estimated)',L+4,h-B-6);
+  var A=SW.auto||O,E=SW.edited||[];
+  P.forEach(function(p,i){var x=X(p);
+    if(E[i]){g.strokeStyle='#5d6876';g.beginPath();g.moveTo(x,Y(A[i]));g.lineTo(x,Y(O[i]));g.stroke();
+      g.fillStyle='#5d6876';g.beginPath();g.arc(x,Y(A[i]),2,0,7);g.fill();g.fillStyle='#ff9f1c'}
+    else g.fillStyle='rgba(78,161,255,.6)';
+    g.beginPath();g.arc(x,Y(O[i]),i===swSel?5:(E[i]?3.5:2),0,7);g.fill();
+    if(i===swSel){g.strokeStyle='#fff';g.lineWidth=1.5;g.stroke();g.lineWidth=1}});
+  swSelTxt();
   g.fillStyle='#9be38b';g.fillText('OPEN',X(SW.openZero)+3,12);g.fillStyle='#ffb04e';g.fillText('touch',X(SW.touchRef)-34,12);
   g.strokeStyle='#9be38b';g.beginPath();g.moveTo(X(SW.openZero),8);g.lineTo(X(SW.openZero),h-B);g.stroke();
   g.strokeStyle='#ffb04e';g.beginPath();g.moveTo(X(SW.touchRef),8);g.lineTo(X(SW.touchRef),h-B);g.stroke();}
+function swSelTxt(){var t=$('swSel');if(!SW||swSel<0||swSel>=SW.n){t.textContent='No point selected';return}
+  var a=(SW.auto||SW.opening)[swSel],o=SW.opening[swSel];
+  t.textContent='Point '+swSel+' at '+SW.positions[swSel]+': analysed '+fx(a,1)+' mm, now '+fx(o,1)+' mm'+((SW.edited||[])[swSel]?' (edited)':'');
+  if(document.activeElement!==$('swMm'))$('swMm').value=fx(o,1)}
+function swEdit(i,mm){post('/api/sweep/opening?i='+i+(mm===null?'':'&mm='+mm)).then(function(){setTimeout(loadSweep,600)})}
+(function(){var c=$('swChart');
+  function near(ev){if(!SW||!SW.n||!SWG)return -1;var r=c.getBoundingClientRect(),x=ev.clientX-r.left,b=-1,bd=12;
+    SW.positions.forEach(function(p,i){var d=Math.abs(SWG.X(p)-x);if(d<bd){bd=d;b=i}});return b}
+  function mmAt(ev){var r=c.getBoundingClientRect(),y=ev.clientY-r.top,v=(SWG.h-SWG.B-y)/(SWG.h-SWG.B-8)*SWG.ymax;return Math.max(0,Math.min(250,Math.round(v*10)/10))}
+  c.addEventListener('pointerdown',function(ev){var i=near(ev);if(i<0)return;swSel=i;swDrag=true;swMoved=false;c.setPointerCapture(ev.pointerId);drawSweep()});
+  c.addEventListener('pointermove',function(ev){if(!swDrag)return;swMoved=true;SW.opening[swSel]=mmAt(ev);drawSweep()});
+  c.addEventListener('pointerup',function(){if(!swDrag)return;swDrag=false;if(swMoved)swEdit(swSel,SW.opening[swSel])});
+})();
+$('swSet').onclick=function(){var v=parseFloat($('swMm').value);if(swSel<0||isNaN(v)){toast('Select a point first');return}swEdit(swSel,v)};
+$('swUndo').onclick=function(){if(swSel<0){toast('Select a point first');return}swEdit(swSel,null)};
+$('swClr').onclick=function(){if(confirm('Clear every curve edit and use the analysed curve again?'))swEdit(-1,null)};
 ['bHome','bHome2'].forEach(function(id){$(id).onclick=function(){if(confirm('Home: is the gripper empty? The fingers close slowly until a fingertip touches, then open.'))post('/api/servo/home')}});
 $('bSweep').onclick=function(){if(confirm('Calibration sweep: gripper empty and nothing in the SEN0628 view? Takes a few minutes; replaces the stored sweep only if it completes.'))post('/api/servo/sweep')};
 loadSweep();

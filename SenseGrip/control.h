@@ -7,9 +7,10 @@
 
 struct ControlRequest {
   enum Kind : uint8_t { FSM_CMD, JOG, JOG_STOP, SET_OPEN, SET_CLOSE, SCAN, CONFIG, CLEAR_LIMITS, CALIBRATE_MIDDLE, SET_POSITION_MODE, HOME, SWEEP,
-                      CAPTURE_BACKGROUND, SET_OVERRIDE, SET_DELICATE, SET_APPROACH_ONLY } kind;
+                      CAPTURE_BACKGROUND, SET_OVERRIDE, SET_DELICATE, SET_APPROACH_ONLY, EDIT_OPENING } kind;
   Cmd cmd; int16_t speed; bool ignoreLimits; GripConfig cfg;   // ignoreLimits: JOG only
   uint8_t value;   // SET_OVERRIDE: 0 auto, 1 small, 2 medium, 3 large; SET_DELICATE / SET_APPROACH_ONLY: 0/1
+  int16_t index; float mm;   // EDIT_OPENING: sample index (-1 = clear all edits), opening mm (NAN = undo)
   bool newFrame;   // SET_OPEN/SET_CLOSE while not homed: confirmed start of a new frame (drops the touch reference)
 };
 

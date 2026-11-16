@@ -573,6 +573,14 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       return;
     }
     case ControlRequest::CAPTURE_BACKGROUND: captureBackground(c); return;
+    case ControlRequest::EDIT_OPENING: {
+      if (c.sweeping) { say(c, false, "curve edit refused: sweep running"); return; }
+      if (const char* err = openingEditSet(r.index, r.mm)) { say(c, false, "curve edit: %s", err); return; }
+      if (r.index < 0) say(c, true, "curve edits cleared: analysed curve in use");
+      else if (r.mm != r.mm) say(c, true, "curve point %d: edit removed", (int)r.index);
+      else say(c, true, "curve point %d set to %.1f mm", (int)r.index, (double)r.mm);
+      return;
+    }
     case ControlRequest::SET_OVERRIDE: {
       c.ov = r.value <= 3 ? (Override)r.value : Override::AUTO;
       static const char* const N[4] = {"auto", "small", "medium", "large"};

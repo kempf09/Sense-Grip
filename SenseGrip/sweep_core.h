@@ -26,6 +26,9 @@ void  sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_
 // Robust smoothing of a measured opening curve in place: median of 5 (symmetric window, shrinking at the ends),
 // then the closest non-increasing sequence (pool-adjacent-violators). The fingertips only close.
 void smoothOpening(float* o, int n);
+// Operator edits of the opening curve: edits[i] replaces opening[i] when it is a valid opening
+// (0..250 mm); NAN (or anything else) keeps the analysed value.
+void applyOpeningEdits(SweepModel& m, const float* edits, int n);
 // Fingertip opening (mm) at a logical position: linear interpolation between samples.
 float openingAt(const SweepModel& m, const SweepSample* s, int32_t pos);
 // Logical position where the fingertip opening first falls to openingMm, moving from `from`

@@ -1,6 +1,7 @@
 #include "sweep_store.h"
 #include <Arduino.h>
 #include <string.h>
+#include <cmath>
 #include <LittleFS.h>
 #include <Preferences.h>
 
@@ -12,6 +13,37 @@ SweepModel gModel = {};
 bool gLoaded = false;
 bool gMounted = false;
 int16_t gDelta[3][64] = {};
+float gEdits[SWEEP_MAX];
+float gAuto[SWEEP_MAX];
+constexpr uint32_t ED_MAGIC = 0x31444531;   // "1ED1"
+void editsReset() { for (float& e : gEdits) e = NAN; }
+// Keeps the analysed curve, then applies the edits on top.
+void applyEdits() {
+  memcpy(gAuto, gModel.opening, sizeof gAuto);
+  applyOpeningEdits(gModel, gEdits, gModel.n);
+}
+void editsLoad() {
+  editsReset();
+  File f = LittleFS.open("/opening.bin", "r");
+  if (!f) return;
+  uint32_t magic = 0; int32_t n = 0, touch = 0;
+  static float tmp[SWEEP_MAX];
+  const bool ok = f.read((uint8_t*)&magic, 4) == 4 && magic == ED_MAGIC && f.read((uint8_t*)&n, 4) == 4 &&
+                  f.read((uint8_t*)&touch, 4) == 4 && n == gModel.n && touch == gModel.touchRef &&
+                  f.read((uint8_t*)tmp, sizeof(float) * n) == sizeof(float) * (size_t)n;
+  f.close();
+  if (ok) memcpy(gEdits, tmp, sizeof(float) * n);
+}
+bool editsSave() {
+  File f = LittleFS.open("/opening.bin", "w");
+  if (!f) return false;
+  const uint32_t magic = ED_MAGIC; const int32_t n = gModel.n, touch = gModel.touchRef;
+  const bool ok = f.write((const uint8_t*)&magic, 4) == 4 && f.write((const uint8_t*)&n, 4) == 4 &&
+                  f.write((const uint8_t*)&touch, 4) == 4 &&
+                  f.write((const uint8_t*)gEdits, sizeof(float) * n) == sizeof(float) * (size_t)n;
+  f.close();
+  return ok;
+}
 constexpr uint32_t BG_MAGIC = 0x31444742;   // "BGD1"
 void bgDeltaLoad() {
   memset(gDelta, 0, sizeof gDelta);
@@ -62,6 +94,8 @@ bool sweepStoreBegin() {
   tofCalibLoad(cal);
   const bool closePositive = gSamples[n - 1].pos > gSamples[0].pos;
   sweepAnalyze(gSamples, n, cal, gModel.openZero, gModel.touchRef, closePositive, gModel);
+  editsLoad();
+  applyEdits();
   gLoaded = true;
   return true;
 }
@@ -92,12 +126,31 @@ const char* sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, 
   memcpy(gSamples, gScratch, sizeof(SweepSample) * n);   // only now replace the loaded sweep
   memset(gDelta, 0, sizeof gDelta);                      // a new sweep is the new background
   LittleFS.remove("/bgdelta.bin");
+  editsReset();                                          // edits belonged to the old curve
+  LittleFS.remove("/opening.bin");
   gModel = model;
+  applyEdits();                                          // keeps gAuto in step (no edits yet)
   gLoaded = true;
   return nullptr;
 }
 
 const int16_t (*bgDelta())[64] { return gDelta; }
+
+const float* openingEdits() { return gEdits; }
+const float* openingAuto() { return gAuto; }
+
+const char* openingEditSet(int i, float mm) {
+  if (!gLoaded || gModel.n <= 0) return "no sweep stored";
+  if (i >= gModel.n) return "sample index out of range";
+  if (i < 0) editsReset();
+  else if (std::isnan(mm)) gEdits[i] = NAN;
+  else if (mm >= 0 && mm <= 250) gEdits[i] = mm;
+  else return "opening must be 0..250 mm";
+  memcpy(gModel.opening, gAuto, sizeof gAuto);            // re-apply all edits on the analysed curve
+  applyOpeningEdits(gModel, gEdits, gModel.n);
+  if (!gMounted || !editsSave()) return "edit applied, but could not save /opening.bin";
+  return nullptr;
+}
 
 bool bgDeltaSave(const int16_t d[3][64]) {
   if (!gMounted) return false;

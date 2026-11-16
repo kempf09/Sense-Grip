@@ -181,6 +181,16 @@ Servo status faults come from the status register and from the status byte of ev
 (OR-ed together). `/api/status` shows both (`servo.status`, `servo.replyStatus`) and names the
 active bits in `servo.statusText`.
 
+### Editing the sweep
+
+Servo tab, under the opening plot:
+- **Curve points:** drag a point up or down (or select it and type a value) to correct the
+  fingertip opening at that position. Edited points are orange, with the analysed value in grey;
+  the pre-touch position uses the edited curve. Edits are saved in `/opening.bin` with the stored
+  sweep and cleared by the next sweep. "Undo point" / "Clear all edits" go back to the analysed curve.
+- **Sweep settings:** step counts per sample (default 100, 60–500), sweep speed (default 5, 1–20)
+  and sweep max current (0 = Close max current). Used by the next sweep.
+
 ## Object perception and grasp (phase 3)
 
 Needs a homed gripper and a stored calibration sweep. Every SEN0628 frame is compared with the
@@ -253,7 +263,8 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/scan` | Find servo baud rate |
 | `/api/servo/home` | Home: close to fingertip touch, set the position frame, open |
 | `/api/servo/sweep` | Run the calibration sweep |
-| GET `/api/sweep` | Stored sweep: positions, fingertip opening, finger zones |
+| GET `/api/sweep` | Stored sweep: positions, fingertip opening (effective), `auto` (analysed), `edited`, finger zones |
+| `/api/sweep/opening?i=N&mm=X` | Edit curve point N (no `mm`: undo that point; `i=-1`: clear all edits) |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
 | `/api/servo/positionMode` | Torque off, servo mode 0 saved in EEPROM (clears limits) |
 | `/api/servo/calibrateMiddle` | Servo middle calibration at the present position (clears limits) |

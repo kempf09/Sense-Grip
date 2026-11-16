@@ -275,3 +275,9 @@ void backgroundAt(const SweepModel& m, const SweepSample* s, int32_t pos,
     }
   }
 }
+
+void applyOpeningEdits(SweepModel& m, const float* edits, int n) {
+  if (n > m.n) n = m.n;
+  for (int i = 0; i < n; i++)
+    if (edits[i] >= 0.0f && edits[i] <= 250.0f) m.opening[i] = edits[i];   // NAN fails both
+}

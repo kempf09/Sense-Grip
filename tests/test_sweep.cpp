@@ -182,3 +182,24 @@ TEST(background_at_adds_delta) {
   CHECK_EQ((int)out[1][10], 0);
   CHECK_EQ((int)out[0][30], 1200);
 }
+
+// ---- operator edits of the opening curve ----
+TEST(opening_edits_replace_points) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  std::vector<float> e(N, NAN);
+  e[60] = 42.0f; e[61] = 41.0f;
+  const float keep = m.opening[62];
+  applyOpeningEdits(m, e.data(), N);
+  CHECK_NEAR(m.opening[60], 42.0f, 1e-6);
+  CHECK_NEAR(m.opening[61], 41.0f, 1e-6);
+  CHECK_NEAR(m.opening[62], keep, 1e-6);
+  CHECK(std::fabs(openingAt(m, v.data(), v[60].pos) - 42.0f) < 1e-4f);
+}
+TEST(opening_edits_ignore_out_of_range) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  const float keep = m.opening[5];
+  std::vector<float> e(N, NAN);
+  e[5] = -3.0f;                                          // not a valid opening: ignored
+  applyOpeningEdits(m, e.data(), N);
+  CHECK_NEAR(m.opening[5], keep, 1e-6);
+}
