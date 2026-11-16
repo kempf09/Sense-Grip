@@ -78,6 +78,7 @@ select{width:auto;min-width:150px;display:block}
   <div>
    <div class="panel"><h2>Finger force</h2><div id="fingers"></div>
     <h2 style="margin-top:12px">Position</h2><div class="bar"><i id="posBar"></i><span id="posTxt"></span></div></div>
+   <div class="panel"><h2>Object</h2><div id="cObj" class="small">-</div></div>
    <div class="panel"><h2>ToF (SEN0628)</h2><div class="grid3" id="cHm"></div></div>
   </div>
  </div>
@@ -132,6 +133,15 @@ select{width:auto;min-width:150px;display:block}
   <button class="b pri" id="maskSave">Save mask</button></div>
  <div class="panel"><h2>Health</h2><table id="tofTbl"></table></div>
  <div class="panel"><h2>Config</h2><div class="cfg" id="tofCfg"></div><button class="b pri" id="tofSave">Save</button></div>
+ <div class="panel"><h2>Object classification</h2>
+  <div id="objLive" class="small">-</div>
+  <div class="row" style="margin-top:8px"><label class="small">Class override <select id="objOv"><option value="auto">auto</option><option value="small">small</option><option value="medium">medium</option><option value="large">large</option></select></label>
+   <label class="small"><input type="checkbox" id="objDel"> Delicate</label>
+   <label class="small"><input type="checkbox" id="objAppr"> Approach only</label>
+   <span class="small">(not kept after restart)</span></div>
+  <div class="cfg" id="objCfg" style="margin-top:8px"></div>
+  <div class="btns"><button class="b pri" id="objSave">Save class settings</button><button class="b" id="objBg">Capture background</button></div>
+  <p class="small">Stand-off = x mm + 10 % of the object distance. Cyan outlines on the maps = object zones; magenta = finger zones.</p></div>
 </section>
 </main>
 <div id="toast"></div>
@@ -180,7 +190,7 @@ function makeHm(host,id,title,clickable){
     if(!CFG)return;var k=+id.slice(-1);maskEdit[k]^=(1n<<BigInt(rw*8+c));drawTof();
   };
 }
-var FZ=[0n,0n,0n],SW=null;
+var FZ=[0n,0n,0n],OZ=[0n,0n,0n],SW=null;
 function drawHm(cv,sn,mask,nums,idx){
   var g=cv.getContext('2d'),W=cv.width,w=W/8;
   g.clearRect(0,0,W,W);g.font='bold 11px sans-serif';g.textAlign='center';g.textBaseline='middle';
@@ -196,6 +206,7 @@ function drawHm(cv,sn,mask,nums,idx){
       g.save();g.beginPath();g.rect(x,y,w-1,w-1);g.clip();g.stroke();g.restore()}
     if(nums&&!off){g.fillStyle='#000';g.fillText(sn.mm[z],x+w/2,y+w/2)}
     if(idx!==undefined&&((FZ[idx]>>BigInt(z))&1n)){g.strokeStyle='#ff4fd8';g.lineWidth=2;g.strokeRect(x+1.5,y+1.5,w-4,w-4)}
+    if(idx!==undefined&&((OZ[idx]>>BigInt(z))&1n)){g.strokeStyle='#39d0ff';g.lineWidth=3;g.strokeRect(x+3,y+3,w-7,w-7)}
   }
   if(off){g.fillStyle='#fff';g.font='bold 26px sans-serif';g.fillText('offline',W/2,W/2)}
 }
@@ -216,6 +227,7 @@ function render(){
   if(st==='FAULT'){fb.style.display='block';fb.innerHTML='FAULT while in '+esc(S.faultFrom)+': '+esc(S.faultReason||S.reason)}else fb.style.display='none';
   var a=$('armed');a.textContent=S.armed?'ARMED':'DISARMED';a.className='pill '+(S.armed?'on':'off');
   renderHome();
+  renderObject();
   $('reason').textContent=S.reason||'';
   var bl=S.blockers||[], only=(bl.length===1&&bl[0]==='not armed');
   var hb='';
@@ -281,8 +293,13 @@ function drawTof(){
 /* ---------- config forms ---------- */
 var FORMS={
  svCfg:[['approachSpeed','Approach speed (1-61, x0.732 RPM)'],['graspSpeed','Grasp speed (1-61, x0.732 RPM)'],['openSpeed','Open speed (1-61, x0.732 RPM)'],['closeTorqueLimit','Close max current (x6.5 mA)'],['openTorqueLimit','Open max current (x6.5 mA)'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['closePositive','Close = positive','b']],
- fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspForceN','Grasp force N'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
- tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']]
+ fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
+ tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']],
+ objCfg:[['smallMaxMm','Small below width mm'],['mediumMaxMm','Medium below width mm'],['contactSpeed','Slow-to-contact speed (1-61)'],
+  ['smallStandoffMm','Small: stand-off mm'],['smallForceN','Small: target force N'],['smallMaxCurrent','Small: max current (x6.5 mA)'],['smallGraspSpeed','Small: grasp speed'],
+  ['mediumStandoffMm','Medium: stand-off mm'],['mediumForceN','Medium: target force N'],['mediumMaxCurrent','Medium: max current (x6.5 mA)'],['mediumGraspSpeed','Medium: grasp speed'],
+  ['largeStandoffMm','Large: stand-off mm'],['largeForceN','Large: target force N'],['largeMaxCurrent','Large: max current (x6.5 mA)'],['largeGraspSpeed','Large: grasp speed'],
+  ['delicateStandoffMm','Delicate: stand-off mm'],['delicateForceN','Delicate: target force N'],['delicateMaxCurrent','Delicate: max current (x6.5 mA)'],['delicateGraspSpeed','Delicate: grasp speed']]
 };
 function buildForms(){
   Object.keys(FORMS).forEach(function(id){
@@ -319,6 +336,31 @@ function saveForm(id,extra){
   post('/api/config',o).then(function(j){if(j){toast('Saved (queued)');setTimeout(loadCfg,500)}});
 }
 $('svSave').onclick=function(){saveForm('svCfg')};
+$('objSave').onclick=function(){saveForm('objCfg')};
+$('objOv').onchange=function(){post('/api/object/override?cls='+this.value)};
+$('objDel').onchange=function(){post('/api/object/delicate?on='+(this.checked?1:0))};
+$('objAppr').onchange=function(){post('/api/object/approachOnly?on='+(this.checked?1:0))};
+$('objBg').onclick=function(){if(confirm('Capture background: gripper empty and nothing in the SEN0628 view?'))post('/api/object/captureBackground')};
+function renderObject(){var O=S.object;if(!O)return;
+  try{OZ=(O.zones||['0','0','0']).map(function(h){return BigInt('0x'+h)})}catch(e){OZ=[0n,0n,0n]}
+  var badges='';
+  if(O.delicate)badges+='<span class="pill on" style="background:#c0392b;color:#fff">DELICATE</span> ';
+  if(O.override&&O.override!=='auto')badges+='<span class="pill on" style="background:#8e44ad;color:#fff">CLASS: '+esc(O.override.toUpperCase())+' (forced)</span> ';
+  if(O.approachOnly)badges+='<span class="pill on" style="background:#d68910;color:#fff">APPROACH ONLY</span> ';
+  var meas=O.valid?('width '+fx(O.width,0)+' mm, range '+fx(O.range,0)+' mm, height '+fx(O.height,0)+' mm, '+esc(O.shape)):'no object measured';
+  var det=O.clsDetected?('detected <b>'+esc(O.clsDetected)+'</b>'):'detected -';
+  var eff=O.cls?('grasp as <b>'+esc(O.cls)+'</b>'):('cannot grasp: '+esc(O.planWhy||'-'));
+  var st=S.state,ph='';
+  if(st==='PRE_TOUCH')ph='PRE_TOUCH step: <b>'+esc(O.step)+'</b>'+(O.approach?' (goal '+O.goal+')':'');
+  var pat='';
+  if(st==='PRE_TOUCH'||st==='GRASP'||st==='MONITOR'){
+    pat='contact: <b>'+esc(O.pattern)+'</b> '+(O.pattern==='none'?'':(O.patternOk?'&#10003;':'&#9888; unexpected for '+esc(O.latched)))+
+      ' <span class="small">('+(O.first||[]).map(function(f,i){return FNAME[i]+': '+esc(f)}).join(', ')+')</span>'}
+  var html=badges+'<div>'+meas+'</div><div>'+det+' &middot; '+eff+'</div>'+(ph?'<div>'+ph+'</div>':'')+(pat?'<div>'+pat+'</div>':'');
+  $('cObj').innerHTML=html;$('objLive').innerHTML=html;
+  var ov=$('objOv');if(document.activeElement!==ov)ov.value=O.override||'auto';
+  $('objDel').checked=!!O.delicate;$('objAppr').checked=!!O.approachOnly;
+}
 $('fsrSave').onclick=function(){saveForm('fsrCfg')};
 $('tofSave').onclick=function(){saveForm('tofCfg')};
 $('maskSave').onclick=function(){
