@@ -825,6 +825,7 @@ void publish(Ctl& c) {
   snprintf(s.lastActionMsg, sizeof(s.lastActionMsg), "%s", c.msg);
   s.lastActionOk = c.msgOk;
   s.loopMaxUs = c.loopMaxUs; s.posJumps = c.posJumps; s.fsrSampleUsMax = c.fsrUsMax;
+  s.controlStackFree = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);   // this task (bytes on ESP32)
   s.homed = c.homed; s.homing = c.homing; s.homeResidual = c.homeResidual;
   s.sweeping = c.sweeping; s.sweepN = c.swN; s.sweepLoaded = sweepLoaded();
   s.estValid = c.est.valid && !c.homed; s.estPos = c.est.pos;

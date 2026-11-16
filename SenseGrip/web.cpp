@@ -18,6 +18,24 @@
 #include "tof.h"
 #include "sweep_store.h"
 #include "contact_core.h"
+#include <esp_system.h>
+
+// Shown in the dashboard header and /api/status: tells which build is running.
+static const char FW_BUILD[] = "phase3-edit " __DATE__ " " __TIME__;
+static const char* resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "CRASH (panic)";
+    case ESP_RST_INT_WDT: return "CRASH (interrupt watchdog)";
+    case ESP_RST_TASK_WDT: return "CRASH (task watchdog)";
+    case ESP_RST_WDT: return "CRASH (watchdog)";
+    case ESP_RST_BROWNOUT: return "BROWN-OUT (supply dipped)";
+    case ESP_RST_EXT: return "reset pin";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    default: return "other";
+  }
+}
 #include "web.h"
 #include "web_pages.h"
 
@@ -218,9 +236,14 @@ static void handleStatus() {
     o.put("],\"pattern\":"); o.str(patternName((Pattern)cs.pattern));
     o.put(",\"patternOk\":"); o.boolean(cs.patternOk);
   }
-  o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu}}",
+  o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu",
         (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors,
         (unsigned long)cs.fsrSampleUsMax);
+  o.put(",\"controlStackFree\":%lu,\"webStackFree\":%lu,\"uptimeS\":%lu,\"fw\":",
+        (unsigned long)cs.controlStackFree, (unsigned long)uxTaskGetStackHighWaterMark(nullptr), (unsigned long)(millis() / 1000));
+  o.str(FW_BUILD);
+  o.put(",\"resetReason\":"); o.str(resetReasonText());
+  o.put("}}");
   sendOut(o);
 }
 
@@ -497,7 +520,10 @@ static void handleEstop() {
 
 // ---------------------------------------------------------------- setup
 void webBegin() {
-  server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", INDEX_HTML); });
+  server.on("/", HTTP_GET, [] {
+    server.sendHeader("Cache-Control", "no-store");      // always the page of the running firmware
+    server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
+  });
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/tof", HTTP_GET, handleTof);
   server.on("/api/object/override", HTTP_POST, handleOverride);

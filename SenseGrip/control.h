@@ -24,6 +24,7 @@ struct ControlStatus {
   bool homed, homing; int32_t homeResidual; char homeMsg[96];
   bool sweeping, sweepLoaded; int32_t sweepN;
   bool estValid; int32_t estPos, estTurn;   // SEN0628 power-up estimate (only before homing)
+  uint32_t controlStackFree;   // control task: lowest free stack seen (bytes)
   uint32_t fsrSampleUsMax; // longest FSR sample pass in the last 5 s (spec: reduce oversampling if > 4 ms)
   // Phase 3: object perception and grasp plan
   ObjectMeasure obj;       // smoothed (300 ms) measurement

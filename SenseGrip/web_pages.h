@@ -11,7 +11,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 :root{--bg:#10151c;--pn:#1a222d;--bd:#2c3846;--tx:#e6edf3;--mu:#8b98a8;--ok:#2ea043;--bad:#e5484d;--wn:#e0a030;--ac:#3b82f6}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--tx);font:15px system-ui,Arial,sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--pn);border-bottom:1px solid var(--bd)}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:8px 12px;background:var(--pn);border-bottom:1px solid var(--bd)}
 header h1{font-size:17px;margin:0;flex:1}
 nav{display:flex;gap:4px;padding:8px 12px 0;flex-wrap:wrap}
 nav button{background:var(--pn);color:var(--mu);border:1px solid var(--bd);border-bottom:0;border-radius:6px 6px 0 0;padding:8px 14px;font-size:15px;cursor:pointer}
@@ -59,7 +59,7 @@ select{width:auto;min-width:150px;display:block}
 .fcal input{width:64px;padding:4px}
 </style></head><body>
 <div id="banner">Connection lost - retrying...</div>
-<header><h1>SenseGrip</h1><span id="hdrState" class="pill">...</span></header>
+<header><h1>SenseGrip</h1><span id="hdrFw" class="small" style="margin-left:auto;font-size:11px"></span><span id="hdrState" class="pill">...</span></header>
 <nav id="tabs"><button data-t="comb" class="on">Combined</button><button data-t="servo">Servo</button><button data-t="fsr">FSR</button><button data-t="tof">SEN0628</button></nav>
 <main>
 <section class="tab on" id="t-comb">
@@ -227,6 +227,7 @@ function render(){
   var st=S.state||'?';
   var b=$('badge');b.textContent=st;b.className='st-'+st;
   var h=$('hdrState');h.textContent=st;h.className='pill st-'+st;
+  var dg=S.diag||{};$('hdrFw').textContent=(dg.fw||'old firmware?')+' | up '+(dg.uptimeS||0)+' s | last reset: '+(dg.resetReason||'?')+' | stack free ctl '+(dg.controlStackFree||'?')+' / web '+(dg.webStackFree||'?');
   var fb=$('faultBox');
   if(st==='FAULT'){fb.style.display='block';fb.innerHTML='FAULT while in '+esc(S.faultFrom)+': '+esc(S.faultReason||S.reason)}else fb.style.display='none';
   var a=$('armed');a.textContent=S.armed?'ARMED':'DISARMED';a.className='pill '+(S.armed?'on':'off');
