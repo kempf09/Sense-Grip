@@ -28,6 +28,14 @@ void  sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_
 void smoothOpening(float* o, int n);
 // Fingertip opening (mm) at a logical position: linear interpolation between samples.
 float openingAt(const SweepModel& m, const SweepSample* s, int32_t pos);
+// Logical position where the fingertip opening first falls to openingMm, moving from `from`
+// toward closing. Returns `from` when the opening there is already <= openingMm (never moves toward
+// open); the last sample's position when the opening never gets that small.
+int32_t positionForOpening(const SweepModel& m, const SweepSample* s, int32_t from, float openingMm);
+// Empty-gripper reading per zone at pos: the nearest sample's frame plus delta (clamped to
+// 1..3999; a 0 reading and sensors absent in that sample give 0).
+void backgroundAt(const SweepModel& m, const SweepSample* s, int32_t pos,
+                  const int16_t delta[3][64], uint16_t out[3][64]);
 // Best-matching sweep sample for a live frame (finger zones only).
 PosEstimate estimatePosition(const SweepModel& m, const SweepSample* s, const uint16_t frame[3][64], uint8_t frameValid);
 // True when the live frame disagrees with the sample nearest pos by more than thresholdMm (RMS

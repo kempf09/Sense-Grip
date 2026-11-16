@@ -1,6 +1,7 @@
 #include "check.h"
 #include "sweep_core.h"
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -148,4 +149,36 @@ TEST(sweep_analysis_removes_single_sample_spike) {
   CHECK(m.opening[60] <= m.opening[59] + 1e-3f);
   CHECK(m.opening[60] >= m.opening[61] - 1e-3f);
   CHECK(std::fabs(m.opening[60] - 0.5f * (m.opening[59] + m.opening[61])) < 2.0f);
+}
+
+// ---- phase 3: opening -> position, background at a position ----
+TEST(opening_to_position_inverts) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  const float want = m.opening[60];
+  const int32_t p = positionForOpening(m, v.data(), 2000, want);
+  CHECK(std::fabs(openingAt(m, v.data(), p) - want) <= 1.0f);
+  CHECK(std::labs((long)p - (long)v[60].pos) <= 100);
+}
+TEST(opening_to_position_never_opens) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  CHECK_EQ(positionForOpening(m, v.data(), v[100].pos, m.opening[20]), v[100].pos);
+}
+TEST(opening_to_position_clamps_closed) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  CHECK_EQ(positionForOpening(m, v.data(), 2000, -1.0f), v[N - 1].pos);
+}
+TEST(opening_to_position_from_before_first_sample) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  const int32_t p = positionForOpening(m, v.data(), 1900, m.opening[30]);
+  CHECK(std::labs((long)p - (long)v[30].pos) <= 100);
+}
+TEST(background_at_adds_delta) {
+  auto v = makeSweep(); SweepModel m = analyze(v);
+  int16_t delta[3][64]; std::memset(delta, 0, sizeof delta);
+  delta[1][30] = 5; delta[1][10] = 5;
+  uint16_t out[3][64];
+  backgroundAt(m, v.data(), v[5].pos + 20, delta, out);   // nearest sample 5: finger zones still 0
+  CHECK_EQ((int)out[1][30], 1205);
+  CHECK_EQ((int)out[1][10], 0);
+  CHECK_EQ((int)out[0][30], 1200);
 }

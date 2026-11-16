@@ -238,3 +238,40 @@ bool positionMismatch(const SweepModel& m, const SweepSample* s, int32_t pos, co
   if (n < MIN_COMPARED) return false;
   return std::sqrt(sum / n) > 1.0;
 }
+
+int32_t positionForOpening(const SweepModel& m, const SweepSample* s, int32_t from, float openingMm) {
+  if (m.n <= 0) return from;
+  const bool inc = m.n < 2 || s[m.n - 1].pos > s[0].pos;
+  auto past = [&](int32_t a, int32_t b) { return inc ? a > b : a < b; };   // a closer than b
+  float prevO = openingAt(m, s, from);
+  if (prevO <= openingMm) return from;
+  int32_t prevP = from;
+  for (int i = 0; i < m.n; i++) {
+    if (!past(s[i].pos, prevP)) continue;
+    const float o = m.opening[i];
+    if (o <= openingMm) {
+      const float t = (prevO - openingMm) / (prevO - o);
+      return prevP + (int32_t)std::lround(t * (float)(s[i].pos - prevP));
+    }
+    prevP = s[i].pos; prevO = o;
+  }
+  return s[m.n - 1].pos;
+}
+
+void backgroundAt(const SweepModel& m, const SweepSample* s, int32_t pos,
+                  const int16_t delta[3][64], uint16_t out[3][64]) {
+  for (int sn = 0; sn < 3; sn++) for (int z = 0; z < 64; z++) out[sn][z] = 0;
+  if (m.n <= 0) return;
+  const SweepSample& ref = s[nearestSample(m, s, pos)];
+  for (int sn = 0; sn < 3; sn++) {
+    if (!((ref.valid >> sn) & 1)) continue;
+    for (int z = 0; z < 64; z++) {
+      const uint16_t v = ref.mm[sn][z];
+      if (!ok(v)) continue;
+      int x = (int)v + delta[sn][z];
+      if (x < 1) x = 1;
+      if (x > 3999) x = 3999;
+      out[sn][z] = (uint16_t)x;
+    }
+  }
+}
