@@ -62,7 +62,8 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
     keeps 3 N and large grasps are refused until it is raised).
 25. **Opening table first.** Open `/api/sweep` (or the Servo tab plot): solid curve falling
     smoothly from ~100 mm to ~11 mm, no spikes. Then tick **Approach only**, arm, and present a
-    rigid object (tube or mug): the fingers must stop short of it. With a ruler, the fingertip
+    rigid object **30–45 mm wide** (the measured opening curve has a step between ~41 and ~28 mm, where
+    the egg and tube targets fall; a mug lands on the smooth part and proves little): the fingers must stop short of it. With a ruler, the fingertip
     gap to the surface should be about x mm + 10 % of the range shown. Only then untick it.
 26. **Capture background** with the gripper empty at the filming location (SEN0628 tab).
 27. **Width of each demo object** (egg, tube, mug, apple, drill handle, asymmetric object), held

@@ -160,7 +160,9 @@ jaw cannot be back-driven), the limits are cleared, Open is required again, and 
   reason ("object not measured ...", "object size not stable", or a class force not below Max force).
 - PRE_TOUCH: two steps. *approach*: full approach speed (servo accel profile) to the pre-touch
   position. *slow*: on arrival (or 0.4 s without progress) closing at the slow-to-contact speed
-  (15) until a finger touches. No touch by the close limit, or a timeout, is a FAULT.
+  (15) until a finger touches. No touch by the close limit, or a timeout, is a FAULT; each step
+  gets the full Pre-touch timeout (on the measured sweep a 25 mm tube needs ~2.5 s + ~7 s).
+  With Approach only and no pre-touch position to move to, it stops right away in MONITOR.
 - GRASP: closing at the class grasp speed until the average force reaches the class target force on enough channels.
 - MONITOR: holding the object. Nothing happens automatically; press Open to release.
 - OPEN: moving back to the OPEN zero. On arrival: IDLE and disarmed.

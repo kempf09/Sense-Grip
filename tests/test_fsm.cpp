@@ -809,3 +809,27 @@ TEST(fsm_delicate_grasp_speed) {
   CHECK(f.state() == State::GRASP);
   CHECK_EQ(a.speed, 3); CHECK_EQ(a.torque, 150);
 }
+// Hardware curve: a 25 mm tube needs ~2.5 s approach + ~6.7 s slow close; each step gets the
+// full PRE_TOUCH timeout (8 s).
+TEST(fsm_pretouch_timeout_restarts_at_slow_step) {
+  Fsm f = approachFsm(100, 9000, 1968);
+  FsmInputs in = ready(400 + 2500); in.position = 9000;
+  MotorAction a = f.step(in);                    // arrival after 2.5 s -> SLOW
+  CHECK(a.kind == MotorAction::RUN);
+  in.nowMs = 400 + 2500 + 7999; in.position = 12000;
+  f.step(in);
+  CHECK(f.state() == State::PRE_TOUCH);           // 10.5 s in PRE_TOUCH, 8 s in SLOW: still fine
+  in.nowMs = 400 + 2500 + 8000;
+  f.step(in);
+  CHECK(f.state() == State::FAULT);
+}
+TEST(fsm_approach_only_without_approach_stops) {
+  Fsm f = startFsm(100);
+  FsmInputs in = ready(100); in.objectPresent = true; in.approachOnly = true;   // ready(): approach=false
+  f.step(in);
+  in.nowMs = 400;
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::MONITOR);
+  CHECK(a.kind == MotorAction::HOLD);
+  CHECK(std::strstr(f.reason(), "approach only") != nullptr);
+}

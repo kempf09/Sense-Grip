@@ -85,6 +85,7 @@ MotorAction Fsm::run(const FsmInputs& in) {
         if (there || (uint32_t)(nowMs_ - progMs_) >= APPROACH_STALL_MS) {
           if (approachOnly_) return enter(State::MONITOR, "approach only: stopped at pre-touch position");
           preStep_ = PreTouchStep::SLOW;
+          entryMs_ = nowMs_;                       // the slow step gets its own PRE_TOUCH timeout
           setReason("pre-touch position reached: slow to contact");
           return act(MotorAction::RUN, cfg_.contactSpeed, 0, plan_.prof.maxCurrent);
         }
@@ -138,6 +139,7 @@ MotorAction Fsm::enter(State s, const char* why) {
         return act(MotorAction::MOVE, cfg_.approachSpeed, plan_.approachGoal, plan_.prof.maxCurrent);
       }
       preStep_ = PreTouchStep::SLOW;
+      if (approachOnly_) return enter(State::MONITOR, "approach only: no pre-touch position to move to (not measured, or already there)");
       return act(MotorAction::RUN, cfg_.contactSpeed, 0, plan_.prof.maxCurrent);
     }
     case State::GRASP:
