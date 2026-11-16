@@ -1,4 +1,5 @@
 #include "sweep_core.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,32 @@ int compare(const SweepModel& m, const uint16_t a[3][64], uint8_t aValid, const 
   return n;
 }
 }  // namespace
+
+void smoothOpening(float* o, int n) {
+  if (n < 3) return;
+  static float med[SWEEP_MAX];
+  if (n > SWEEP_MAX) n = SWEEP_MAX;
+  for (int i = 0; i < n; i++) {
+    float w[5]; int k = 0;
+    const int r = std::min(2, std::min(i, n - 1 - i));   // symmetric window: the ends keep their value
+    for (int j = i - r; j <= i + r; j++) w[k++] = o[j];
+    std::sort(w, w + k);
+    med[i] = (k % 2) ? w[k / 2] : 0.5f * (w[k / 2 - 1] + w[k / 2]);
+  }
+  // Pool adjacent violators for a non-increasing fit: blocks of (mean, count).
+  static float mean[SWEEP_MAX]; static int cnt[SWEEP_MAX];
+  int b = 0;
+  for (int i = 0; i < n; i++) {
+    mean[b] = med[i]; cnt[b] = 1; b++;
+    while (b > 1 && mean[b - 1] > mean[b - 2]) {
+      const int c = cnt[b - 2] + cnt[b - 1];
+      mean[b - 2] = (mean[b - 2] * cnt[b - 2] + mean[b - 1] * cnt[b - 1]) / c;
+      cnt[b - 2] = c; b--;
+    }
+  }
+  int i = 0;
+  for (int k = 0; k < b; k++) for (int j = 0; j < cnt[k]; j++) o[i++] = mean[k];
+}
 
 bool sweepValid(const SweepSample* s, int n, int32_t openZero, bool closePositive) {
   char b[80];
@@ -120,6 +147,14 @@ void sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_t
     i = j;
   }
   for (int i = last + 1; i < n; i++) out.opening[i] = out.opening[last];
+  // 4. Robust smoothing of the measured part (hardware sweeps show single-frame spikes), then
+  //    extrapolate the unseen open end again from the smoothed first value.
+  smoothOpening(out.opening + first, n - first);
+  for (int i = 0; i < first; i++) {
+    const float d = (float)fromOpen(s[i].pos, openZero, closePositive);
+    const float t = d0 > 0 ? d / d0 : 1;
+    out.opening[i] = OPENING_AT_OPEN_MM + (out.opening[first] - OPENING_AT_OPEN_MM) * t;
+  }
 }
 
 float openingAt(const SweepModel& m, const SweepSample* s, int32_t pos) {

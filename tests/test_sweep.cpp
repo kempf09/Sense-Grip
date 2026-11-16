@@ -1,5 +1,6 @@
 #include "check.h"
 #include "sweep_core.h"
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -120,4 +121,31 @@ TEST(sweep_invalid_why_names_the_problem) {
   CHECK(std::strstr(sweepInvalidWhy(v.data(), N, 1600, true, b, sizeof b), "400 counts") != nullptr);
   auto w = v; w[50].pos = w[49].pos;
   CHECK(std::strstr(sweepInvalidWhy(w.data(), N, 2000, true, b, sizeof b), "sample 50") != nullptr);
+}
+
+// Hardware sweep 2026-11-16 (/api/sweep, firstSeen 12): measured fingertip opening, raw from the
+// analysis before smoothing existed. Single-sample spikes: 167.1 / 156.4 mm, dips 30.5 / 27.6 mm.
+static const float HW_OPENING[] = {99.8, 90.0, 87.1, 167.1, 81.2, 80.3, 86.1, 79.3, 156.4, 80.3, 73.5, 77.3, 75.4, 76.4, 75.4, 74.4, 73.5, 68.6, 69.6, 66.7, 63.8, 67.7, 73.5, 62.8, 67.7, 67.7, 68.6, 68.6, 60.0, 62.8, 63.8, 64.8, 63.8, 64.8, 61.9, 59.0, 59.0, 62.8, 54.2, 60.9, 54.2, 59.0, 53.2, 52.2, 51.2, 51.2, 49.2, 49.2, 49.2, 48.2, 47.2, 48.2, 45.3, 46.3, 44.3, 45.3, 44.3, 44.3, 42.3, 30.5, 42.3, 41.3, 41.3, 41.3, 27.6, 28.5, 26.6, 29.5, 27.6, 26.6, 26.6, 27.6, 23.7, 23.7, 25.6, 23.7, 22.7, 24.6, 21.7, 23.7, 23.7, 22.7, 22.7, 21.7, 22.7, 21.7, 19.8, 20.8, 22.7, 21.7, 20.8, 21.7, 21.7, 21.7, 21.7, 20.8, 20.8, 19.8, 20.8, 17.9, 18.9, 19.8, 17.9, 18.9, 19.8, 17.0, 17.0, 17.0, 16.1, 17.0, 16.1, 15.1, 17.0, 10.9, 11.5, 12.1, 14.2, 12.1, 13.4, 13.3, 12.1, 14.1, 12.1, 12.4, 12.4, 12.4, 13.3, 10.7, 10.1, 11.4, 12.4, 13.3, 12.1, 11.6, 12.1, 10.8};
+TEST(sweep_smoothing_hw_monotonic_without_spikes) {
+  const int n = sizeof(HW_OPENING) / sizeof(HW_OPENING[0]);
+  std::vector<float> o(HW_OPENING, HW_OPENING + n);
+  smoothOpening(o.data(), n);
+  for (int i = 1; i < n; i++) CHECK(o[i] <= o[i - 1] + 1e-4f);
+  CHECK(o[0] <= 100.0f);                                  // spike 167.1 at raw 15 gone
+  CHECK(o[3] < 100.0f && o[8] < 100.0f);
+  CHECK(o[71 - 12] >= 40.0f);                             // dip 30.5 between ~42 mm neighbours gone
+  CHECK(o[n - 1] >= 9.0f && o[n - 1] <= 14.0f);           // touch ~11-12 mm kept
+}
+TEST(sweep_smoothing_keeps_short_or_clean) {
+  float a[3] = {50, 40, 30};
+  smoothOpening(a, 3);
+  CHECK_NEAR(a[0], 50, 1e-4); CHECK_NEAR(a[2], 30, 1e-4);
+}
+TEST(sweep_analysis_removes_single_sample_spike) {
+  auto v = makeSweep();
+  for (int s = 0; s < 3; s++) for (int z : {10, 11, 18, 19}) v[60].mm[s][z] += 40;   // one wild frame
+  SweepModel m = analyze(v);
+  CHECK(m.opening[60] <= m.opening[59] + 1e-3f);
+  CHECK(m.opening[60] >= m.opening[61] - 1e-3f);
+  CHECK(std::fabs(m.opening[60] - 0.5f * (m.opening[59] + m.opening[61])) < 2.0f);
 }

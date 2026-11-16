@@ -23,6 +23,9 @@ bool sweepValid(const SweepSample* s, int n, int32_t openZero, bool closePositiv
 const char* sweepInvalidWhy(const SweepSample* s, int n, int32_t openZero, bool closePositive, char* buf, int bufLen);
 void  sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_t openZero,
                    int32_t touchRef, bool closePositive, SweepModel& out);
+// Robust smoothing of a measured opening curve in place: median of 5 (symmetric window, shrinking at the ends),
+// then the closest non-increasing sequence (pool-adjacent-violators). The fingertips only close.
+void smoothOpening(float* o, int n);
 // Fingertip opening (mm) at a logical position: linear interpolation between samples.
 float openingAt(const SweepModel& m, const SweepSample* s, int32_t pos);
 // Best-matching sweep sample for a live frame (finger zones only).

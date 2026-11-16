@@ -42,6 +42,12 @@ bool sweepStoreBegin() {
             gModel.n == n;
   f.close();
   if (!ok) { gModel.n = 0; return false; }
+  // Re-analyze the stored samples with the current rules (smoothing etc.), so analysis fixes do
+  // not need a new sweep. The stored header keeps OPEN zero and the touch reference.
+  SensorCalib cal[3];
+  tofCalibLoad(cal);
+  const bool closePositive = gSamples[n - 1].pos > gSamples[0].pos;
+  sweepAnalyze(gSamples, n, cal, gModel.openZero, gModel.touchRef, closePositive, gModel);
   gLoaded = true;
   return true;
 }
