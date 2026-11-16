@@ -12,6 +12,9 @@
 #include "homing_core.h"
 #include "pins.h"
 #include "sweep_store.h"
+#include "object_core.h"
+#include "plan_core.h"
+#include "contact_core.h"
 
 static QueueHandle_t gQueue = nullptr;
 static ControlStatus gStatus;
@@ -79,6 +82,12 @@ struct Ctl {
   PosEstimate est = {false, 0, 0}; int32_t estRaw = 0; uint32_t estMs = 0;
   PosEstimate estAtHome = {false, 0, 0}; int32_t estRawAtHome = 0;
   uint32_t checkMs = 0, mismatchSinceMs = 0; bool mismatching = false;
+  // Phase 3: object perception, grasp plan, contact pattern (spec §7)
+  ObjectSmoother sm = {}; uint32_t objOk[3] = {0, 0, 0};
+  Override ov = Override::AUTO; bool delicate = false, approachOnly = false;   // RAM only
+  PlanResult pr = {};
+  FirstContact first[3] = {FirstContact::NONE, FirstContact::NONE, FirstContact::NONE};
+  State lastState = State::IDLE;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -558,6 +567,21 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       sweepStart(c, sv, now);
       return;
     }
+    case ControlRequest::CAPTURE_BACKGROUND: captureBackground(c); return;
+    case ControlRequest::SET_OVERRIDE: {
+      c.ov = r.value <= 3 ? (Override)r.value : Override::AUTO;
+      static const char* const N[4] = {"auto", "small", "medium", "large"};
+      say(c, true, "class override: %s (until restart)", N[(int)c.ov]);
+      return;
+    }
+    case ControlRequest::SET_DELICATE:
+      c.delicate = r.value != 0;
+      say(c, true, "delicate mode %s (until restart)", c.delicate ? "ON" : "off");
+      return;
+    case ControlRequest::SET_APPROACH_ONLY:
+      c.approachOnly = r.value != 0;
+      say(c, true, "approach only %s (until restart)", c.approachOnly ? "ON: grasps stop at the pre-touch position" : "off");
+      return;
     case ControlRequest::HOME: {
       if (c.homing || c.sweeping) return;                 // already running
       jogStop(c);
@@ -708,6 +732,75 @@ void checkPositionJump(Ctl& c, uint32_t now) {
   c.havePos = true; c.lastPos = pos; c.lastPosMs = now;
 }
 
+// ---- Phase 3: object measurement, grasp plan, contact pattern (spec §7) ----
+// Measures on every new SEN0628 frame set; needs the homed frame and a sweep (background and
+// finger zones come from the sweep at the present position).
+void objectUpdate(Ctl& c, uint32_t now) {
+  if (!c.homed || !sweepLoaded() || c.sweeping || c.homing) { smootherReset(c.sm); return; }
+  const TofSnapshot t = tofGet();
+  bool fresh = false;
+  for (int s = 0; s < 3; s++) if (t.s[s].ok != c.objOk[s]) { fresh = true; c.objOk[s] = t.s[s].ok; }
+  if (!fresh) return;
+  static uint16_t frame[3][64], bg[3][64];
+  uint8_t valid = 0;
+  for (int s = 0; s < 3; s++) {
+    memcpy(frame[s], t.s[s].mm, sizeof(frame[s]));
+    if (t.s[s].online) valid |= 1u << s;
+  }
+  backgroundAt(sweepModel(), sweepSamples(), servoGet().fb.position, bgDelta(), bg);
+  smootherAdd(c.sm, measureObject(frame, valid, bg, sweepModel().fingerZones, c.cal), now);
+}
+
+void planUpdate(Ctl& c, uint32_t now) {
+  const bool sw = sweepLoaded();
+  c.pr = buildPlan(c.cfg, c.homed, sw ? &sweepModel() : nullptr, sw ? sweepSamples() : nullptr,
+                   smoothed(c.sm, now), c.ov, c.delicate, servoGet().fb.position);
+}
+
+// First pad per finger, from START to MONITOR (reset when a grasp starts).
+void contactUpdate(Ctl& c) {
+  const State st = c.fsm.state();
+  if (st == State::START && c.lastState != State::START)
+    for (auto& f : c.first) f = FirstContact::NONE;
+  c.lastState = st;
+  if (st != State::PRE_TOUCH && st != State::GRASP) return;
+  const FsrSnapshot fs = fsrGet();
+  bool prox[3], dist[3];
+  for (int f = 0; f < 3; f++) {
+    const int d = FINGER_FSR_MAP[f][0], p = FINGER_FSR_MAP[f][1];
+    dist[f] = (c.cfg.fsrEnabled & (1u << d)) && fs.force[d] == fs.force[d] && fs.force[d] >= c.cfg.contactForceN;
+    prox[f] = (c.cfg.fsrEnabled & (1u << p)) && fs.force[p] == fs.force[p] && fs.force[p] >= c.cfg.contactForceN;
+  }
+  updateFirstContact(c.first, prox, dist);
+}
+
+// Capture background: the present empty-gripper view minus the sweep at this position, per
+// non-finger zone (re-mounting / new filming location without a full sweep).
+void captureBackground(Ctl& c) {
+  if (c.fsm.state() != State::IDLE) { say(c, false, "Capture background refused: not in IDLE"); return; }
+  if (!c.homed) { say(c, false, "Capture background refused: not homed"); return; }
+  if (!sweepLoaded()) { say(c, false, "Capture background refused: no sweep stored"); return; }
+  if (fsrGet().agg.channelsInContact > 0) { say(c, false, "Capture background refused: an FSR shows contact - empty the gripper"); return; }
+  const TofSnapshot t = tofGet();
+  if (t.online != 3) { say(c, false, "Capture background refused: all three SEN0628 must be online"); return; }
+  static uint16_t bg[3][64];
+  static int16_t zero[3][64], d[3][64];
+  memset(zero, 0, sizeof zero);
+  backgroundAt(sweepModel(), sweepSamples(), servoGet().fb.position, zero, bg);
+  int changed = 0;
+  for (int s = 0; s < 3; s++) for (int z = 0; z < 64; z++) {
+    d[s][z] = 0;
+    if ((sweepModel().fingerZones[s] >> z) & 1) continue;
+    const uint16_t v = t.s[s].mm[z];
+    if (v == 0 || v >= 4000 || bg[s][z] == 0) continue;
+    d[s][z] = (int16_t)((int)v - (int)bg[s][z]);
+    if (d[s][z] > 15 || d[s][z] < -15) changed++;
+  }
+  if (!bgDeltaSave(d)) { say(c, false, "Capture background: could not save /bgdelta.bin"); return; }
+  smootherReset(c.sm);
+  say(c, true, "background captured: %d zones differ from the sweep by more than 15 mm", changed);
+}
+
 void publish(Ctl& c) {
   ControlStatus s;
   memset(&s, 0, sizeof(s));
@@ -724,6 +817,18 @@ void publish(Ctl& c) {
   s.estValid = c.est.valid && !c.homed; s.estPos = c.est.pos;
   s.estTurn = c.cfg.touchValid ? turnOf(c.est.pos, c.cfg.touchRef) : 0;
   snprintf(s.homeMsg, sizeof(s.homeMsg), "%s", c.homeMsg);
+  s.obj = smoothed(c.sm, millis());
+  s.objDetectedValid = c.pr.detectedValid; s.objDetected = (uint8_t)c.pr.detected;
+  s.planValid = c.pr.plan.valid; s.planCls = (uint8_t)c.pr.plan.cls;
+  s.planApproach = c.pr.plan.approach; s.planGoal = c.pr.plan.approachGoal;
+  snprintf(s.planWhy, sizeof(s.planWhy), "%s", c.pr.why ? c.pr.why : "");
+  s.override_ = (uint8_t)c.ov; s.delicate = c.delicate; s.approachOnly = c.approachOnly;
+  s.preTouchStep = (uint8_t)c.fsm.preTouchStep();
+  s.latchedCls = (uint8_t)c.fsm.plan().cls;
+  for (int f = 0; f < 3; f++) s.firstContact[f] = (uint8_t)c.first[f];
+  const Pattern pat = patternOf(c.first);
+  s.pattern = (uint8_t)pat;
+  s.patternOk = patternConsistent(pat, c.fsm.plan().cls);
   portENTER_CRITICAL(&gMux);
   memcpy(&gStatus, &s, sizeof(s));
   portEXIT_CRITICAL(&gMux);
@@ -825,10 +930,14 @@ void controlTask(void*) {
     sweepUpdate(*c, now);
     estimateUpdate(*c, now);
     checkUpdate(*c, now);
+    objectUpdate(*c, now);
+    planUpdate(*c, now);
     if (c->pendingOpen && cmd == Cmd::NONE) { c->pendingOpen = false; cmd = Cmd::OPEN; }
     FsmInputs fin = buildInputs(now, cmd);
     fin.homed = c->homed;
+    fin.plan = c->pr.plan; fin.planWhy = c->pr.why; fin.approachOnly = c->approachOnly;
     MotorAction a = c->fsm.step(fin);
+    contactUpdate(*c);
     if (a.kind != MotorAction::NONE && !applyAction(a)) {
       c->fsm.motorFailed(servoGet().lastError);
       servoStop();

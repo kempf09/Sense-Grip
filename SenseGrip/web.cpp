@@ -17,6 +17,7 @@
 #include "servo_proto.h"
 #include "tof.h"
 #include "sweep_store.h"
+#include "contact_core.h"
 #include "web.h"
 #include "web_pages.h"
 
@@ -43,7 +44,7 @@ struct Out {
   }
 };
 
-static char statusBuf[8192];            // only the web task touches these (status incl. up to 21 blockers)
+static char statusBuf[12288];            // only the web task touches these (status incl. up to 21 blockers)
 static char smallBuf[3072];   // config JSON incl. the v7 class profiles (~1.6 kB)
 
 static void sendJson(int code, const char* body) {
@@ -188,6 +189,35 @@ static void handleStatus() {
   o.put(",\"touchValid\":"); o.boolean(cfg.touchValid);
   o.put(",\"estimate\":");
   if (cs.estValid) o.put("{\"pos\":%ld,\"turn\":%ld}", (long)cs.estPos, (long)cs.estTurn); else o.put("null");
+  {   // phase 3: object perception and grasp plan
+    static const char* const CLS[4] = {"small", "medium", "large", "delicate"};
+    static const char* const OV[4] = {"auto", "small", "medium", "large"};
+    static const char* const FC[4] = {"none", "proximal", "distal", "both"};
+    const ObjectMeasure& m = cs.obj;
+    o.put("},\"object\":{\"valid\":"); o.boolean(m.valid);
+    o.put(",\"width\":"); o.flt(m.valid ? m.widthMm : NAN);
+    o.put(",\"range\":"); o.flt(m.valid ? m.rangeMm : NAN);
+    o.put(",\"height\":"); o.flt(m.valid ? m.heightMm : NAN);
+    o.put(",\"shape\":"); o.str(m.valid ? shapeName(m.shape) : "unknown");
+    o.put(",\"zones\":[");
+    for (int k = 0; k < 3; k++) o.put("%s\"%016llx\"", k ? "," : "", (unsigned long long)(m.valid ? m.zones[k] : 0));
+    o.put("],\"clsDetected\":");
+    if (cs.objDetectedValid) o.str(CLS[cs.objDetected & 3]); else o.put("null");
+    o.put(",\"cls\":");
+    if (cs.planValid) o.str(CLS[cs.planCls & 3]); else o.put("null");
+    o.put(",\"override\":"); o.str(OV[cs.override_ & 3]);
+    o.put(",\"delicate\":"); o.boolean(cs.delicate);
+    o.put(",\"approachOnly\":"); o.boolean(cs.approachOnly);
+    o.put(",\"planWhy\":"); o.str(cs.planWhy);
+    o.put(",\"approach\":"); o.boolean(cs.planApproach);
+    o.put(",\"goal\":%ld", (long)cs.planGoal);
+    o.put(",\"step\":"); o.str(cs.preTouchStep == (uint8_t)PreTouchStep::APPROACH ? "approach" : "slow");
+    o.put(",\"latched\":"); o.str(CLS[cs.latchedCls & 3]);
+    o.put(",\"first\":[");
+    for (int f = 0; f < 3; f++) { if (f) o.put(","); o.str(FC[cs.firstContact[f] & 3]); }
+    o.put("],\"pattern\":"); o.str(patternName((Pattern)cs.pattern));
+    o.put(",\"patternOk\":"); o.boolean(cs.patternOk);
+  }
   o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu}}",
         (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors,
         (unsigned long)cs.fsrSampleUsMax);
@@ -415,6 +445,21 @@ static void handleJog() {
 }
 
 static void simple(ControlRequest::Kind k) { sendQueued(blankReq(k)); }
+// ?on=0|1
+static void onOff(ControlRequest::Kind k) {
+  ControlRequest r = blankReq(k);
+  r.value = (server.hasArg("on") && server.arg("on") == "1") ? 1 : 0;
+  sendQueued(r);
+}
+// ?cls=auto|small|medium|large
+static void handleOverride() {
+  const String v = server.hasArg("cls") ? server.arg("cls") : String("");
+  ControlRequest r = blankReq(ControlRequest::SET_OVERRIDE);
+  if (v == "auto") r.value = 0; else if (v == "small") r.value = 1;
+  else if (v == "medium") r.value = 2; else if (v == "large") r.value = 3;
+  else { sendError(400, "cls must be auto, small, medium or large", v.c_str()); return; }
+  sendQueued(r);
+}
 // ?newFrame=1: the operator confirmed setting a limit while not homed (drops the touch reference).
 static void setLimit(ControlRequest::Kind k) {
   ControlRequest r = blankReq(k);
@@ -434,6 +479,10 @@ void webBegin() {
   server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", INDEX_HTML); });
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/tof", HTTP_GET, handleTof);
+  server.on("/api/object/override", HTTP_POST, handleOverride);
+  server.on("/api/object/delicate", HTTP_POST, [] { onOff(ControlRequest::SET_DELICATE); });
+  server.on("/api/object/approachOnly", HTTP_POST, [] { onOff(ControlRequest::SET_APPROACH_ONLY); });
+  server.on("/api/object/captureBackground", HTTP_POST, [] { simple(ControlRequest::CAPTURE_BACKGROUND); });
   server.on("/api/config", HTTP_GET, handleConfigGet);
   server.on("/api/config", HTTP_POST, handleConfigPost);
   server.on("/api/fsr/cal", HTTP_GET, handleCalGet);

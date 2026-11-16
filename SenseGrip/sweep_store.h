@@ -13,4 +13,9 @@ SweepSample* sweepScratch();                // SWEEP_MAX entries for a sweep in 
 // loaded sweep (RAM and flash) is unchanged.
 // Returns nullptr on success, else which step failed (incl. LittleFS used/total bytes).
 const char* sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, int32_t touchRef, bool closePositive);
-bool tofCalibLoad(SensorCalib out[3]);      // false (defaults returned) when senCal2 is missing
+bool tofCalibLoad(SensorCalib out[3]);
+// Capture-background correction (spec §7.1): per-zone difference between the present empty-gripper
+// view and the sweep, added to the sweep's background. RAM (zero by default), LittleFS /bgdelta.bin,
+// loaded by sweepStoreBegin, cleared when a new sweep is committed.
+const int16_t (*bgDelta())[64];
+bool bgDeltaSave(const int16_t d[3][64]);      // false (defaults returned) when senCal2 is missing

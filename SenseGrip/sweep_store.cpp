@@ -1,5 +1,6 @@
 #include "sweep_store.h"
 #include <Arduino.h>
+#include <string.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 
@@ -10,6 +11,18 @@ SweepSample* gScratch = nullptr;
 SweepModel gModel = {};
 bool gLoaded = false;
 bool gMounted = false;
+int16_t gDelta[3][64] = {};
+constexpr uint32_t BG_MAGIC = 0x31444742;   // "BGD1"
+void bgDeltaLoad() {
+  memset(gDelta, 0, sizeof gDelta);
+  File f = LittleFS.open("/bgdelta.bin", "r");
+  if (!f) return;
+  uint32_t magic = 0;
+  int16_t tmp[3][64];
+  if (f.read((uint8_t*)&magic, 4) == 4 && magic == BG_MAGIC && f.read((uint8_t*)tmp, sizeof tmp) == sizeof tmp)
+    memcpy(gDelta, tmp, sizeof tmp);
+  f.close();
+}
 char gErr[96];
 const char* fail(const char* what) {
   if (gMounted) snprintf(gErr, sizeof gErr, "%s (LittleFS %u/%u bytes used)", what,
@@ -32,6 +45,7 @@ bool sweepStoreBegin() {
   if (!gSamples) return false;
   gMounted = LittleFS.begin(true);
   if (!gMounted) return false;
+  bgDeltaLoad();
   File f = LittleFS.open("/sweep.bin", "r");
   if (!f) return false;
   uint32_t magic = 0; int32_t n = 0;
@@ -76,9 +90,24 @@ const char* sweepStoreCommit(int n, const SensorCalib cal[3], int32_t openZero, 
   LittleFS.remove("/sweep.bin");                         // old file kept until the new one is complete
   if (!LittleFS.rename("/sweep.tmp", "/sweep.bin")) return fail("rename /sweep.tmp failed");
   memcpy(gSamples, gScratch, sizeof(SweepSample) * n);   // only now replace the loaded sweep
+  memset(gDelta, 0, sizeof gDelta);                      // a new sweep is the new background
+  LittleFS.remove("/bgdelta.bin");
   gModel = model;
   gLoaded = true;
   return nullptr;
+}
+
+const int16_t (*bgDelta())[64] { return gDelta; }
+
+bool bgDeltaSave(const int16_t d[3][64]) {
+  if (!gMounted) return false;
+  File f = LittleFS.open("/bgdelta.bin", "w");
+  if (!f) return false;
+  const uint32_t magic = BG_MAGIC;
+  const bool ok = f.write((const uint8_t*)&magic, 4) == 4 && f.write((const uint8_t*)d, sizeof gDelta) == sizeof gDelta;
+  f.close();
+  if (ok) memcpy(gDelta, d, sizeof gDelta);
+  return ok;
 }
 
 bool tofCalibLoad(SensorCalib out[3]) {
