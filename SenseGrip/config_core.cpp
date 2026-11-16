@@ -76,6 +76,11 @@ const char* limitsProblem(const GripConfig& c) {
   return nullptr;
 }
 
+bool limitsRestorable(const GripConfig& c) {
+  if (!c.touchValid) return false;
+  GripConfig t = c; t.limitsValid = true;
+  return limitsProblem(t) == nullptr;
+}
 
 FilterParams filterParamsOf(const GripConfig& c) {
   return FilterParams{(FilterKind)c.fsrFilter, c.fsrFilterWindow, c.fsrFilterAlpha, c.fsrKalmanQ, c.fsrKalmanR};

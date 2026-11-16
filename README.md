@@ -62,6 +62,11 @@ A maximum-current push (2.7 A, at most 0.5 s, once, only in the first 0.8 s of H
 all three SEN0628 are online and see no fingers) is used only for a jaw stuck past the open
 position, never near closed. Home gives up after 120 s (full travel at speed 5 takes ~80 s).
 
+OPEN zero and the close limit are saved in the same frame as the touch reference. When a lost
+turn count clears them (servo power cycle, Set position mode), a successful Home re-enables
+them ("homed, ... limits restored"). Setting OPEN zero or the close limit while **not** homed
+starts a new frame: the touch reference is dropped and the calibration sweep must be run again.
+
 **If Home keeps failing** (pads changed, mechanics changed, after Calibrate servo middle): jog to
 fully open, press Set OPEN zero, and run the calibration sweep again. The sweep is only allowed
 after Home or after Set OPEN zero in the same power-up, so it never uses an OPEN zero from an

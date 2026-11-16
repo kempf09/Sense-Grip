@@ -85,3 +85,15 @@ TEST(config_v5_blob_sizes) {
   CHECK_EQ((unsigned)(GRIP_CONFIG_V5_BLOB_SIZE % alignof(GripConfig)), 0u);
   CHECK(GRIP_CONFIG_V5_BLOB_SIZE >= GRIP_CONFIG_V5_SIZE);
 }
+
+TEST(limits_restorable_after_home) {
+  GripConfig c = defaultConfig();
+  c.openZero = 1000; c.closeLimit = 20000; c.closePositive = true; c.limitsValid = false;
+  CHECK(!limitsRestorable(c));                         // no touch reference: unknown frame
+  c.touchValid = true; c.touchRef = 20100;
+  CHECK(limitsRestorable(c));
+  c.closeLimit = 500;                                  // not on the closing side
+  CHECK(!limitsRestorable(c));
+  c = defaultConfig(); c.touchValid = true;            // never set (both 0)
+  CHECK(!limitsRestorable(c));
+}

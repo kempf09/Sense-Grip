@@ -49,3 +49,7 @@ FilterParams filterParamsOf(const GripConfig& c);
 bool clampConfig(GripConfig& c);
 // nullptr if ok, else a human-readable problem.
 const char* limitsProblem(const GripConfig& c);
+// After a successful Home the logical frame is the touch-reference frame again, so limits saved
+// in that frame (cleared only because the turn count was lost) can be re-enabled: true when a
+// touch reference exists and the saved OPEN zero / close limit are a valid pair.
+bool limitsRestorable(const GripConfig& c);

@@ -204,7 +204,14 @@ void homeFinish(Ctl& c) {
   c.havePos = false;                                     // new frame: new jump-guard baseline
   c.homed = true;
   c.homing = false;
-  snprintf(c.homeMsg, sizeof(c.homeMsg), "homed, residual %ld counts", (long)r.residual);
+  // Limits are kept in the touch-reference frame: a lost turn count cleared them, Home restores them.
+  bool restored = false;
+  if (!c.cfg.limitsValid && limitsRestorable(c.cfg)) {
+    GripConfig n = c.cfg; n.limitsValid = true;
+    if (configSave(n)) { c.cfg = n; applyConfig(c); restored = true; }
+  }
+  snprintf(c.homeMsg, sizeof(c.homeMsg), "homed, residual %ld counts%s", (long)r.residual,
+           restored ? ", limits restored" : "");
   say(c, true, "Home: %s - opening", c.homeMsg);
   c.pendingOpen = true;
 }
@@ -502,6 +509,11 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       if (!sv.online || sv.ageMs > SERVO_FRESH_MS) { say(c, false, "%s refused: no fresh servo position", what); return; }
       jogStop(c);
       GripConfig n = c.cfg;
+      // Saved limits live in the touch-reference frame. Not homed, the frame may be whole turns
+      // off: a limit set now belongs to a new frame, so the old touch reference no longer applies
+      // (re-calibration path: set the limits, then run the calibration sweep).
+      const bool dropTouch = n.touchValid && !c.homed;
+      if (dropTouch) n.touchValid = false;
       if (isOpen) n.openZero = sv.fb.position; else n.closeLimit = sv.fb.position;
       if (isOpen) c.openZeroSetThisBoot = true;
       n.limitsValid = true;
@@ -513,6 +525,7 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       c.fsm.invalidateOpened();            // OPEN must be reached again against the new limits
       if (prob) say(c, true, "%s saved at %ld; limits not valid yet (%s)", what, (long)sv.fb.position,
                     isOpen ? "set CLOSE limit on the closing side" : "set OPEN zero on the opening side");
+      else if (dropTouch) say(c, true, "%s saved at %ld; not homed, so the touch reference was dropped - run the calibration sweep (press Home first next time)", what, (long)sv.fb.position);
       else say(c, true, "%s saved at %ld", what, (long)sv.fb.position);
       return;
     }
