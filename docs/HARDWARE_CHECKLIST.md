@@ -74,3 +74,11 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
     stops at the class force, the contact pattern is shown (wrap for large, pinch for small).
 30. **Delicate egg:** tick Delicate (badge shown), grasp the egg: 0.4 N, grasp speed 3.
 31. **Drill by its handle:** override LARGE (badge "CLASS: LARGE (forced)"), grasp holds ~500 g.
+
+### Phase 4a — recordings
+
+32. **Rate:** Recordings panel shows ~100 rows/s. Grasp once: one recording appears, rows ≈ 100 ×
+    duration in s, no "gap", result "grasped"; class and width filled in.
+33. **Reload mid-grasp:** reload the page during a grasp: the same recording continues (no gap).
+34. **CSV:** download it and open it in Excel / Python: `#` lines, one header, numeric columns;
+    the `event` column shows `state:...`, `contact:F<n>:...` and `grasp_reached`.

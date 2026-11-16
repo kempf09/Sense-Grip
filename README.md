@@ -225,6 +225,24 @@ palm count.
   config keeps its value (3 N), and then large grasps are refused with that reason and config
   saves are refused until Max force (FSR tab) is raised.
 
+## Recordings (data logging)
+
+The control task writes one row per 10 ms step (100 Hz) into a ~5 minute ring buffer in PSRAM
+(nothing is written to flash). While the dashboard is open it fetches new rows every 250 ms and
+keeps them in the browser (IndexedDB, survives a page reload):
+
+- **Per grasp, automatically:** from START until 1 s after the gripper is back in IDLE (or 1 s
+  after a FAULT). Listed in the Combined tab's Recordings panel with duration, rows, class,
+  width and result (grasped / aborted / FAULT).
+- **Manual:** Start / Stop manual recording records everything in between (e.g. filter tests).
+- **CSV:** `#` lines first (firmware build, class profile, filter, contact and max force, units),
+  then `seq,t_ms,state,step,armed,pos,speed,current_mA,load_pct,f1..f6,r1..r6,c1..c3,tof_seq,
+  obj_valid,width_mm,range_mm,height_mm,rad1..rad3,cls,shape,event`. Forces in N (f filtered,
+  r raw, FSR1..6), position in servo counts. `event` marks state changes, the first contact per
+  finger (`contact:F2:distal`) and `grasp_reached`.
+- Rows are only collected while the page is open; if it was closed for more than ~5 min during a
+  grasp, the recording is marked **gap**. A gripper restart closes an open recording (gap).
+
 ## Why won't it arm?
 
 The dashboard lists every blocker. Arm is refused while any is present.
@@ -264,6 +282,7 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/home` | Home: close to fingertip touch, set the position frame, open |
 | `/api/servo/sweep` | Run the calibration sweep |
 | GET `/api/sweep` | Stored sweep: positions, fingertip opening (effective), `auto` (analysed), `edited`, finger zones |
+| GET `/api/log?from=<seq>&max=<n>` | Logged rows as CSV (headers `X-Log-Next`, `X-Log-Oldest`, `X-Log-Boot`) |
 | `/api/sweep/opening?i=N&mm=X` | Edit curve point N (no `mm`: undo that point; `i=-1`: clear all edits) |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
 | `/api/servo/positionMode` | Torque off, servo mode 0 saved in EEPROM (clears limits) |
@@ -303,6 +322,7 @@ Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 
 - `object_core.*` object points, width, class, shape, 300 ms smoothing (pure)
 - `plan_core.*` grasp plan: class, profile, pre-touch goal (pure)
 - `contact_core.*` contact pattern wrap / pinch (pure)
+- `log_core.*` 100 Hz data log ring and CSV rows (pure)
 - `sweep_store.*` sweep file (LittleFS) and SEN0628 calibration (NVS `senCal2`)
 - `fsr.*` FSR ADC reading (100 Hz), filtering and calibration storage
 - `tof_detect.*` object-present detection (pure)
