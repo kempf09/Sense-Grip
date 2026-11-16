@@ -55,3 +55,21 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 21. **ESP32 restart only** (servo stays powered): the dashboard shows NOT HOMED; Home works.
 22. **Jump guard:** with the ESP32 on, power-cycle only the servo → NOT HOMED appears.
 23. **Running check:** homed, idle, hold an object in the SEN0628 view → no "position check failed".
+
+### Phase 3 — object perception and grasp
+
+24. **Max force.** FSR tab: Max force N above the large class force (default 8 N; an older config
+    keeps 3 N and large grasps are refused until it is raised).
+25. **Opening table first.** Open `/api/sweep` (or the Servo tab plot): solid curve falling
+    smoothly from ~100 mm to ~11 mm, no spikes. Then tick **Approach only**, arm, and present a
+    rigid object (tube or mug): the fingers must stop short of it. With a ruler, the fingertip
+    gap to the surface should be about x mm + 10 % of the range shown. Only then untick it.
+26. **Capture background** with the gripper empty at the filming location (SEN0628 tab).
+27. **Width of each demo object** (egg, tube, mug, apple, drill handle, asymmetric object), held
+    centred: note width / range / shape / class on the SEN0628 tab against a ruler.
+28. **Nothing measurable:** arm with an object outside the 100 mm zone (or hold a hand far away):
+    START gives up after 3 s with "object not measured ...", disarmed.
+29. **One grasp per class:** Combined tab shows PRE_TOUCH step "approach" then "slow", the grasp
+    stops at the class force, the contact pattern is shown (wrap for large, pinch for small).
+30. **Delicate egg:** tick Delicate (badge shown), grasp the egg: 0.4 N, grasp speed 3.
+31. **Drill by its handle:** override LARGE (badge "CLASS: LARGE (forced)"), grasp holds ~500 g.

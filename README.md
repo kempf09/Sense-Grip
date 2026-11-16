@@ -155,9 +155,13 @@ jaw cannot be back-driven), the limits are cleared, Open is required again, and 
 ```
 
 - IDLE: fingers held at open. Waits for Arm and an object.
-- START: one-cycle check that nothing blocks. If something does, back to IDLE with the reason.
-- PRE_TOUCH: closing at approach speed until a finger touches. No touch by the close limit, or a timeout, is a FAULT.
-- GRASP: closing slowly until the average force reaches the target on enough channels.
+- START: checks that nothing blocks, then measures the object (see below) until it has had the
+  same size class for 300 ms. After 3 s without that it goes back to IDLE, disarmed, with the
+  reason ("object not measured ...", "object size not stable", or a class force not below Max force).
+- PRE_TOUCH: two steps. *approach*: full approach speed (servo accel profile) to the pre-touch
+  position. *slow*: on arrival (or 0.4 s without progress) closing at the slow-to-contact speed
+  (15) until a finger touches. No touch by the close limit, or a timeout, is a FAULT.
+- GRASP: closing at the class grasp speed until the average force reaches the class target force on enough channels.
 - MONITOR: holding the object. Nothing happens automatically; press Open to release.
 - OPEN: moving back to the OPEN zero. On arrival: IDLE and disarmed.
 - FAULT: torque off, with the reason shown. Reset, then Open.
@@ -173,6 +177,40 @@ flag; MONITOR keeps holding until you press Open.
 Servo status faults come from the status register and from the status byte of every servo reply
 (OR-ed together). `/api/status` shows both (`servo.status`, `servo.replyStatus`) and names the
 active bits in `servo.statusText`.
+
+## Object perception and grasp (phase 3)
+
+Needs a homed gripper and a stored calibration sweep. Every SEN0628 frame is compared with the
+empty-gripper view the sweep recorded at the present finger position; zones that are not finger
+zones and read closer than that background by more than max(15 mm, 20 %) are **object zones**
+(cyan outlines on the heatmaps). Only points within 100 mm of the gripper axis and above the
+palm count.
+
+- **Width** = 2 × the mean, over sensors that see the object, of the median distance of its
+  points from the gripper axis; averaged over 300 ms. Also shown: range (sensor distance),
+  height, coarse **shape** (round / elongated / irregular / unknown with fewer than two sensors).
+- **Class:** small below 50 mm, medium below 90 mm, large above (SEN0628 tab). The SEN0628 reads
+  ±10 %, so an object within 10 % below a boundary takes the larger class.
+- **Profile per class** (SEN0628 tab): stand-off x, target force, max current, grasp speed.
+  Defaults: small 10 mm / 1 N / 200 / 5, medium 10 mm / 2 N / 260 / 5, large 10 mm / 4 N / 350 / 5,
+  delicate 15 mm / 0.4 N / 150 / 3.
+- **Pre-touch position:** where the fingertip opening (from the sweep) is width/2 + x + 10 % of the
+  object range, so a reading 10 % short never drives the fingers into the object. Never past the
+  close limit, never back toward open (an object wider than the present opening skips the approach).
+- **Class override** (auto / small / medium / large), **Delicate** and **Approach only** are on the
+  SEN0628 tab, RAM only (gone after a restart), and shown as badges on the Combined tab. Delicate
+  beats the override. With an override or Delicate the grasp runs even if nothing is measured
+  (then without the fast approach). **Approach only** stops in MONITOR at the pre-touch position:
+  use it to check the stand-off with a ruler.
+- **Capture background** (SEN0628 tab, gripper empty, IDLE, homed): stores the difference between
+  the present view and the sweep, for a new mounting or filming location without a new sweep.
+  Cleared by the next sweep.
+- **Contact pattern** (Combined tab): which pad of each finger touched first. Proximal first =
+  *wrap* (expected for large objects), distal only = *pinch* (small objects); ⚠ when it does not
+  fit the class. Display only.
+- **Max force N** must be above every class target force. The default is now 8 N; a stored older
+  config keeps its value (3 N), and then large grasps are refused with that reason and config
+  saves are refused until Max force (FSR tab) is raised.
 
 ## Why won't it arm?
 
@@ -220,6 +258,14 @@ All under the dashboard host. POST unless noted.
 | `/api/fsm/open` | Go to OPEN zero |
 | `/api/fsm/estop` | Emergency stop, FAULT |
 | `/api/fsm/reset` | Clear FAULT |
+| `/api/object/override?cls=auto\|small\|medium\|large` | Class override (RAM) |
+| `/api/object/delicate?on=0\|1` | Delicate mode (RAM) |
+| `/api/object/approachOnly?on=0\|1` | Stop at the pre-touch position (RAM) |
+| `/api/object/captureBackground` | Store the empty-gripper background correction |
+
+`/api/status` → `object` holds the smoothed measurement (`valid`, `width`, `range`, `height`,
+`shape`, `zones`), `clsDetected`, the effective `cls` (or `planWhy`), the switches, the fast
+approach `goal`, the PRE_TOUCH `step`, and the contact `pattern` / `first` / `patternOk`.
 
 `/api/status` → `fsr` contains `force` (filtered), `forceRaw`, `filterDelayMs` and `limitForce`.
 Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 2 median, 3 EMA,
@@ -239,7 +285,10 @@ Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 
 - `fsr_filter.*` FSR filters and their delay (pure)
 - `tof_geometry.*` SEN0628 zone geometry, ported from the 3.0.3 3D page (pure)
 - `homing_core.*` turn resolution, stall and unstick rules (pure)
-- `sweep_core.*` finger zones, opening table, position estimate and check (pure)
+- `sweep_core.*` finger zones, opening table (smoothed), opening → position, background, position estimate and check (pure)
+- `object_core.*` object points, width, class, shape, 300 ms smoothing (pure)
+- `plan_core.*` grasp plan: class, profile, pre-touch goal (pure)
+- `contact_core.*` contact pattern wrap / pinch (pure)
 - `sweep_store.*` sweep file (LittleFS) and SEN0628 calibration (NVS `senCal2`)
 - `fsr.*` FSR ADC reading (100 Hz), filtering and calibration storage
 - `tof_detect.*` object-present detection (pure)
