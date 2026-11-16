@@ -42,3 +42,5 @@ void controlRequestEstop();                       // checked first every iterati
 ControlStatus controlGet();
 GripConfig controlGetConfig();                    // copy of the active config (any task)
 void controlTask(void*);
+struct LogRing;
+const LogRing* controlLog();                       // the 100 Hz data log (phase 4a); null before the task starts

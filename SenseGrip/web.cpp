@@ -19,6 +19,8 @@
 #include "sweep_store.h"
 #include "contact_core.h"
 #include <esp_system.h>
+#include <esp_random.h>
+#include "log_core.h"
 
 // Shown in the dashboard header and /api/status: tells which build is running.
 static const char FW_BUILD[] = "phase3-edit " __DATE__ " " __TIME__;
@@ -429,6 +431,42 @@ static void handleZeroPost() {
   sendJson(200, "{\"ok\":true}");
 }
 
+// ---------------------------------------------------------------- data log (phase 4a)
+// GET /api/log?from=<seq>&max=<n>: CSV rows from the 100 Hz ring. Header line when from=0 or
+// header=1. X-Log-Next: seq to ask for next; X-Log-Oldest: oldest seq still held; X-Log-Boot:
+// random id per boot (a change means the ring restarted).
+static uint32_t gBootId = 0;
+static void handleLogGet() {
+  const LogRing* ring = controlLog();
+  if (!ring) { sendError(503, "log not ready"); return; }
+  long long from = 0, mx = 300;
+  if (server.hasArg("from") && !parseI(server.arg("from"), 0, 0xFFFFFFFFLL, from)) { sendError(400, "bad from"); return; }
+  if (server.hasArg("max") && !parseI(server.arg("max"), 1, 600, mx)) { sendError(400, "max must be 1..600"); return; }
+  static LogRow rows[600];                       // web task only
+  uint32_t oldest = 0, next = 0;
+  const uint32_t n = logRead(*ring, (uint32_t)from, (uint32_t)mx, rows, oldest, next);
+  char h[16];
+  snprintf(h, sizeof h, "%lu", (unsigned long)next);   server.sendHeader("X-Log-Next", h);
+  snprintf(h, sizeof h, "%lu", (unsigned long)oldest); server.sendHeader("X-Log-Oldest", h);
+  snprintf(h, sizeof h, "%08lx", (unsigned long)gBootId); server.sendHeader("X-Log-Boot", h);
+  server.sendHeader("Access-Control-Expose-Headers", "X-Log-Next, X-Log-Oldest, X-Log-Boot");
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/csv", "");
+  static char buf[4096];                         // batch lines into ~4 KB chunks
+  int used = 0;
+  if (from == 0 || (server.hasArg("header") && server.arg("header") == "1"))
+    used = snprintf(buf, sizeof buf, "%s\n", LOG_CSV_HEADER);
+  for (uint32_t i = 0; i < n; i++) {
+    char line[320];
+    const int k = logCsvLine(rows[i], line, sizeof line);
+    if (used + k >= (int)sizeof buf) { server.sendContent(buf, used); used = 0; }
+    memcpy(buf + used, line, k); used += k;
+  }
+  if (used) server.sendContent(buf, used);
+  server.sendContent("");
+}
+
 // ---------------------------------------------------------------- sweep
 // GET /api/sweep: positions, fingertip opening and finger zones of the stored sweep (chunked).
 static void handleSweepGet() {
@@ -520,6 +558,7 @@ static void handleEstop() {
 
 // ---------------------------------------------------------------- setup
 void webBegin() {
+  gBootId = esp_random();
   server.on("/", HTTP_GET, [] {
     server.sendHeader("Cache-Control", "no-store");      // always the page of the running firmware
     server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
@@ -528,6 +567,7 @@ void webBegin() {
   server.on("/api/tof", HTTP_GET, handleTof);
   server.on("/api/object/override", HTTP_POST, handleOverride);
   server.on("/api/sweep/opening", HTTP_POST, handleOpeningEdit);
+  server.on("/api/log", HTTP_GET, handleLogGet);
   server.on("/api/object/delicate", HTTP_POST, [] { onOff(ControlRequest::SET_DELICATE); });
   server.on("/api/object/approachOnly", HTTP_POST, [] { onOff(ControlRequest::SET_APPROACH_ONLY); });
   server.on("/api/object/captureBackground", HTTP_POST, [] { simple(ControlRequest::CAPTURE_BACKGROUND); });

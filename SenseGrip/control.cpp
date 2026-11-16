@@ -15,11 +15,15 @@
 #include "object_core.h"
 #include "plan_core.h"
 #include "contact_core.h"
+#include "log_core.h"
+#include <climits>
 
 static QueueHandle_t gQueue = nullptr;
 static ControlStatus gStatus;
 static volatile bool gEstopReq = false;
 static GripConfig gCfgPub;
+static LogRing gLog = {nullptr, 0, 0};
+const LogRing* controlLog() { return gLog.rows ? &gLog : nullptr; }
 
 static constexpr uint32_t JOG_DEADMAN_MS = 300;
 static constexpr uint32_t SERVO_FRESH_MS = 100;
@@ -88,6 +92,9 @@ struct Ctl {
   PlanResult pr = {};
   FirstContact first[3] = {FirstContact::NONE, FirstContact::NONE, FirstContact::NONE};
   State lastState = State::IDLE;
+  // Phase 4a log: events waiting for a row (one event per row)
+  State logState = State::IDLE; FirstContact logFirst[3] = {FirstContact::NONE, FirstContact::NONE, FirstContact::NONE};
+  bool pendGrasp = false; uint8_t pendContact = 0;   // bit f: finger f's first contact not yet logged
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -814,6 +821,62 @@ void captureBackground(Ctl& c) {
   say(c, true, "background captured: %d zones differ from the sweep by more than 15 mm", changed);
 }
 
+// ---- Phase 4a: one log row per FSR sample (100 Hz) ----
+int16_t toMilli(float v) {
+  if (!(v == v)) return INT16_MIN;
+  const float x = v * 1000.0f;
+  return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
+}
+int16_t toTenth(float v, bool ok) {
+  if (!ok || !(v == v)) return INT16_MIN;
+  const float x = v * 10.0f;
+  return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
+}
+
+void logStep(Ctl& c, uint32_t now) {
+  if (!gLog.rows) return;
+  const State st = c.fsm.state();
+  LogRow r{};
+  r.tMs = now; r.state = (uint8_t)st; r.armed = c.fsm.armed();
+  r.step = st == State::PRE_TOUCH ? (uint8_t)((uint8_t)c.fsm.preTouchStep() + 1) : 0;
+  const ServoSnapshot sv = servoGet();
+  r.pos = sv.fb.position; r.speed = sv.fb.speed;
+  r.currentMa = (int16_t)(sv.fb.current * 6.5f);
+  r.loadPermille = (int16_t)(sv.fb.load * 1000.0f);
+  const FsrSnapshot fs = fsrGet();
+  for (int i = 0; i < 6; i++) {
+    const int col = FSR_CHANNEL_NUMBER[i] - 1;           // printed order FSR1..FSR6
+    r.fmN[col] = toMilli(fs.force[i]);
+    r.rmN[col] = toMilli(fs.forceRaw[i]);
+  }
+  for (int f = 0; f < 3; f++) if (fs.contacts.stable[f]) r.contacts |= (uint8_t)(1u << f);
+  r.tofSeq = (uint16_t)(c.objOk[0] + c.objOk[1] + c.objOk[2]);
+  const ObjectMeasure m = smoothed(c.sm, now);
+  r.objValid = m.valid;
+  r.width10 = toTenth(m.widthMm, m.valid); r.range10 = toTenth(m.rangeMm, m.valid); r.height10 = toTenth(m.heightMm, m.valid);
+  for (int s = 0; s < 3; s++) r.rad10[s] = toTenth(m.sensorRadiusMm[s], m.valid);
+  r.cls = c.pr.plan.valid ? (uint8_t)c.pr.plan.cls : 255;
+  r.shape = (uint8_t)m.shape;
+  // Events: one per row; STATE first, then grasp reached, then the first contact per finger.
+  if (st != c.logState) {
+    if (c.logState == State::GRASP && st == State::MONITOR) c.pendGrasp = true;
+    if (st == State::START) for (auto& f : c.logFirst) f = FirstContact::NONE;
+    c.logState = st;
+    r.ev = LogEvent::STATE; r.evArg = (uint8_t)st;
+  }
+  for (int f = 0; f < 3; f++)
+    if (c.logFirst[f] == FirstContact::NONE && c.first[f] != FirstContact::NONE) { c.logFirst[f] = c.first[f]; c.pendContact |= (uint8_t)(1u << f); }
+  if (r.ev == LogEvent::NONE && c.pendGrasp) { r.ev = LogEvent::GRASP_REACHED; c.pendGrasp = false; }
+  if (r.ev == LogEvent::NONE && c.pendContact)
+    for (int f = 0; f < 3; f++)
+      if (c.pendContact & (1u << f)) {
+        c.pendContact &= (uint8_t)~(1u << f);
+        r.ev = LogEvent::CONTACT; r.evArg = (uint8_t)(f + 1); r.evArg2 = (uint8_t)c.logFirst[f];
+        break;
+      }
+  logPush(gLog, r);
+}
+
 void publish(Ctl& c) {
   ControlStatus s;
   memset(&s, 0, sizeof(s));
@@ -886,6 +949,12 @@ void controlTask(void*) {
   bootStop(*c);                        // stop a still-running servo before anything slow
   tofCalibLoad(c->cal);                // SEN0628 calibration saved by the 3.0.3 3D page
   sweepStoreBegin();                   // LittleFS (may format on first use) + /sweep.bin
+  {   // phase 4a data log: ~5 min at 100 Hz in PSRAM (small fallback in internal RAM)
+    LogRow* st = (LogRow*)ps_malloc(sizeof(LogRow) * LOG_CAP);
+    uint32_t cap = LOG_CAP;
+    if (!st) { cap = 3000; st = (LogRow*)malloc(sizeof(LogRow) * cap); }
+    if (st) logInit(gLog, st, cap);
+  }
   // Mode/phase are read on the first iteration so Open is not refused for the first second.
   uint32_t lastServo = 0, lastFsr = 0, lastMode = 0;
   bool modeRead = false;
@@ -937,6 +1006,7 @@ void controlTask(void*) {
       fsrSample(c->cfg.contactForceN, c->cfg.contactSamples, c->cfg.fsrEnabled, filterParamsOf(c->cfg));
       const uint32_t dt = micros() - t0;
       if (dt > c->fsrUsMaxWin) c->fsrUsMaxWin = dt;
+      logStep(*c, now);
     }
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
