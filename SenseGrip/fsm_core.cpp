@@ -42,6 +42,8 @@ void Fsm::setConfig(const GripConfig& c) { cfg_ = c; }
 MotorAction Fsm::step(const FsmInputs& in) {
   nowMs_ = in.nowMs;
   fsrSeq_ = in.fsrSeq;
+  lastPos_ = in.position;
+  approachOnly_ = in.approachOnly;
   computeBlockers(in);
   MotorAction a = NO_ACTION;
 
@@ -73,10 +75,20 @@ MotorAction Fsm::run(const FsmInputs& in) {
         std::snprintf(scratch_, sizeof scratch_, "Start aborted: %s", blockers_[0].text);
         return enter(State::IDLE, scratch_);
       }
-      return enter(State::PRE_TOUCH, "approaching object");
+      return startUpdate(in);
 
     case State::PRE_TOUCH:
       if (in.anyFingerContact) return enter(State::GRASP, "finger contact");
+      if (preStep_ == PreTouchStep::APPROACH) {
+        if (std::abs((long)in.position - (long)progPos_) >= 5) { progPos_ = in.position; progMs_ = nowMs_; }
+        const bool there = std::abs((long)in.position - (long)plan_.approachGoal) <= (long)cfg_.openToleranceCounts;
+        if (there || (uint32_t)(nowMs_ - progMs_) >= APPROACH_STALL_MS) {
+          if (approachOnly_) return enter(State::MONITOR, "approach only: stopped at pre-touch position");
+          preStep_ = PreTouchStep::SLOW;
+          setReason("pre-touch position reached: slow to contact");
+          return act(MotorAction::RUN, cfg_.contactSpeed, 0, plan_.prof.maxCurrent);
+        }
+      }
       if (pastCloseLimit(in.position)) return enter(State::FAULT, "no contact before close limit");
       if (timedOut(in, cfg_.preTouchTimeoutMs)) return enter(State::FAULT, "PRE_TOUCH timeout");
       return NO_ACTION;
@@ -116,15 +128,24 @@ MotorAction Fsm::enter(State s, const char* why) {
       if (prev == State::OPEN) return act(MotorAction::HOLD, cfg_.openSpeed, 0, cfg_.openTorqueLimit);
       return NO_ACTION;                          // from START: never moved; from FAULT: torque stays off
     case State::START:
+      planEverValid_ = false; haveCls_ = false; clsSinceMs_ = nowMs_; startFirst_ = true;
       return NO_ACTION;
-    case State::PRE_TOUCH:
-      return act(MotorAction::RUN, cfg_.approachSpeed, 0, cfg_.closeTorqueLimit);
+    case State::PRE_TOUCH: {
+      const int32_t ahead = cfg_.closePositive ? plan_.approachGoal - lastPos_ : lastPos_ - plan_.approachGoal;
+      if (plan_.approach && ahead > (int32_t)cfg_.openToleranceCounts) {
+        preStep_ = PreTouchStep::APPROACH;
+        progPos_ = lastPos_; progMs_ = nowMs_;
+        return act(MotorAction::MOVE, cfg_.approachSpeed, plan_.approachGoal, plan_.prof.maxCurrent);
+      }
+      preStep_ = PreTouchStep::SLOW;
+      return act(MotorAction::RUN, cfg_.contactSpeed, 0, plan_.prof.maxCurrent);
+    }
     case State::GRASP:
       graspCount_ = 0;
       graspSeq_ = fsrSeq_;                       // count only samples newer than the contact one
-      return act(MotorAction::RUN, cfg_.graspSpeed, 0, cfg_.closeTorqueLimit);
+      return act(MotorAction::RUN, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
     case State::MONITOR:
-      return act(MotorAction::HOLD, cfg_.graspSpeed, 0, cfg_.closeTorqueLimit);
+      return act(MotorAction::HOLD, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
     case State::OPEN:
       return act(MotorAction::MOVE, cfg_.openSpeed, cfg_.openZero, cfg_.openTorqueLimit);
     case State::FAULT:
@@ -228,11 +249,44 @@ const char* Fsm::safetyTrip(const FsmInputs& in) {
   return nullptr;
 }
 
+// START: wait until the plan has been valid with one class for START_STABLE_MS, then latch it.
+MotorAction Fsm::startUpdate(const FsmInputs& in) {
+  // The class seen at the first START update counts from START entry (the step that entered
+  // START had the same inputs).
+  const bool first = startFirst_;
+  startFirst_ = false;
+  if (!in.plan.valid) { haveCls_ = false; clsSinceMs_ = nowMs_; }
+  else {
+    planEverValid_ = true;
+    if (!haveCls_ || in.plan.cls != stableCls_) {
+      haveCls_ = true; stableCls_ = in.plan.cls; clsSinceMs_ = first ? entryMs_ : nowMs_;
+    }
+    if ((uint32_t)(nowMs_ - clsSinceMs_) >= START_STABLE_MS) {
+      if (!(in.plan.prof.forceN < cfg_.maxForceN)) {
+        armed_ = false;
+        static const char* const NAMES[4] = {"small", "medium", "large", "delicate"};
+        std::snprintf(scratch_, sizeof scratch_, "Start aborted: %s target force %.1f N is not below Max force %.1f N - raise Max force (FSR tab)",
+                      NAMES[(int)in.plan.cls & 3], (double)in.plan.prof.forceN, (double)cfg_.maxForceN);
+        return enter(State::IDLE, scratch_);
+      }
+      plan_ = in.plan;
+      return enter(State::PRE_TOUCH, plan_.approach ? "approaching pre-touch position" : "closing slowly to contact");
+    }
+  }
+  if ((uint32_t)(nowMs_ - entryMs_) >= START_TIMEOUT_MS) {
+    armed_ = false;
+    if (!planEverValid_) std::snprintf(scratch_, sizeof scratch_, "Start aborted: %s", in.planWhy ? in.planWhy : "object not measured");
+    else std::snprintf(scratch_, sizeof scratch_, "Start aborted: object size not stable");
+    return enter(State::IDLE, scratch_);
+  }
+  return NO_ACTION;
+}
+
 // Counts consecutive new FSR samples meeting the grasp target.
 bool Fsm::graspReached(const FsmInputs& in) {
   if (in.fsrSeq == graspSeq_) return false;
   graspSeq_ = in.fsrSeq;
-  bool ok = in.avgContactForce >= cfg_.graspForceN && in.channelsInContact >= cfg_.minActiveFsr;
+  bool ok = in.avgContactForce >= plan_.prof.forceN && in.channelsInContact >= cfg_.minActiveFsr;
   graspCount_ = ok ? graspCount_ + 1 : 0;
   return graspCount_ >= cfg_.graspSamples;
 }

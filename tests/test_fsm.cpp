@@ -17,6 +17,8 @@ static FsmInputs ready(uint32_t now = 0) {
   in.servoFullAngle = true; in.servoModeKnown = true; in.servoMode = 0; in.homed = true; in.position = 1968;
   for (int i = 0; i < 6; i++) { in.fsrCalibrated[i] = true; in.fsrForce[i] = 0; }
   in.tofOnline = 3; in.objectPresent = false;
+  // Measured medium object, no fast approach: slow to contact at 15, grasp 1.0 N at speed 10 / 200.
+  in.plan = GraspPlan{true, ObjClass::MEDIUM, false, 0, ClassProfile{10, 1.0f, 200, 10}};
   return in;
 }
 
@@ -47,13 +49,15 @@ static Fsm openedFsm() {
   return f;
 }
 
-// openedFsm, armed, triggered, now in PRE_TOUCH.
+// openedFsm, armed, triggered at t0 - 300 (START), class stable: PRE_TOUCH entered at t0.
 static Fsm preTouchFsm(uint32_t t0) {
   Fsm f = openedFsm();
-  cmd(f, ready(t0), Cmd::ARM);
-  FsmInputs in = ready(t0);
+  cmd(f, ready(t0 - START_STABLE_MS), Cmd::ARM);
+  FsmInputs in = ready(t0 - START_STABLE_MS);
   in.objectPresent = true;
   f.step(in);
+  CHECK(f.state() == State::START);
+  in.nowMs = t0;
   f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
   return f;
@@ -100,14 +104,21 @@ TEST(fsm_arm_then_trigger_runs_approach) {
   CHECK(f.armed());
   FsmInputs in = ready(21);
   in.objectPresent = true;
+  in.plan.approach = true; in.plan.approachGoal = 9000;
   MotorAction a = f.step(in);
   CHECK(f.state() == State::START);
   CHECK(a.kind == MotorAction::NONE);
+  in.nowMs = 21 + START_STABLE_MS - 1;
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(f.state() == State::START);
+  in.nowMs = 21 + START_STABLE_MS;
   a = f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
-  CHECK(a.kind == MotorAction::RUN);
+  CHECK(a.kind == MotorAction::MOVE);
+  CHECK_EQ(a.position, 9000);
   CHECK_EQ(a.speed, 61);
   CHECK_EQ(a.torque, 200);
+  CHECK(f.preTouchStep() == PreTouchStep::APPROACH);
 }
 
 TEST(fsm_arm_with_object_already_present_waits_hold) {
@@ -215,7 +226,7 @@ TEST(fsm_close_limit_mirrored_when_closing_negative) {
   CHECK(f.state() == State::IDLE);
   cmd(f, in, Cmd::ARM);
   in.objectPresent = true;
-  f.step(in); f.step(in);
+  f.step(in); in.nowMs += START_STABLE_MS; f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
   in.position = 1968 + 9; f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
@@ -629,7 +640,7 @@ TEST(fsm_close_limit_reached_within_tolerance_faults) {
   FsmInputs in = ready();
   in.cmd = Cmd::ARM; f.step(in);
   in.cmd = Cmd::NONE; in.objectPresent = true;
-  f.step(in); f.step(in);                       // IDLE -> START -> PRE_TOUCH
+  f.step(in); in.nowMs += START_STABLE_MS; f.step(in);   // IDLE -> START -> (300 ms) PRE_TOUCH
   CHECK(f.state() == State::PRE_TOUCH);
   in.position = cfg().closeLimit - 5;           // servo stopped just short of its goal
   in.nowMs += 10;
@@ -659,4 +670,142 @@ TEST(fsm_homed_no_blocker) {
   Blocker b[Fsm::MAX_REPORTED];
   uint8_t n = f.blockers(b, Fsm::MAX_REPORTED);
   for (uint8_t i = 0; i < n; i++) CHECK(strstr(b[i].text, "not homed") == nullptr);
+}
+
+// ---- phase 3: grasp plan ----
+static Fsm startFsm(uint32_t t0) {
+  Fsm f = openedFsm();
+  cmd(f, ready(t0), Cmd::ARM);
+  FsmInputs in = ready(t0); in.objectPresent = true;
+  f.step(in);
+  CHECK(f.state() == State::START);
+  return f;
+}
+TEST(fsm_start_waits_for_stable_class) {
+  Fsm f = startFsm(100);
+  FsmInputs in = ready(100); in.objectPresent = true;
+  for (uint32_t t = 100; t < 100 + START_TIMEOUT_MS; t += 100) {
+    in.nowMs = t; in.plan.cls = ((t / 100) & 1) ? ObjClass::SMALL : ObjClass::MEDIUM;
+    f.step(in);
+    CHECK(f.state() == State::START);
+  }
+  in.nowMs = 100 + START_TIMEOUT_MS;
+  f.step(in);
+  CHECK(f.state() == State::IDLE);
+  CHECK(!f.armed());
+  CHECK(std::strstr(f.reason(), "not stable") != nullptr);
+}
+TEST(fsm_start_aborts_without_measurement) {
+  Fsm f = startFsm(100);
+  FsmInputs in = ready(100); in.objectPresent = true;
+  in.plan.valid = false; in.planWhy = "object not measured (no points in view)";
+  in.nowMs = 100 + START_TIMEOUT_MS - 1; f.step(in);
+  CHECK(f.state() == State::START);
+  in.nowMs = 100 + START_TIMEOUT_MS; f.step(in);
+  CHECK(f.state() == State::IDLE);
+  CHECK(!f.armed());
+  CHECK(std::strstr(f.reason(), "object not measured") != nullptr);
+}
+TEST(fsm_start_refuses_force_above_max) {
+  Fsm f = startFsm(100);                         // cfg(): maxForceN 3
+  FsmInputs in = ready(100); in.objectPresent = true;
+  in.plan.cls = ObjClass::LARGE; in.plan.prof.forceN = 4.0f;
+  f.step(in);
+  in.nowMs = 100 + START_STABLE_MS; f.step(in);
+  CHECK(f.state() == State::IDLE);
+  CHECK(!f.armed());
+  CHECK(std::strstr(f.reason(), "Max force") != nullptr);
+}
+static Fsm approachFsm(uint32_t t0, int32_t goal, int32_t pos, bool approachOnly = false) {
+  Fsm f = startFsm(t0);
+  FsmInputs in = ready(t0); in.objectPresent = true; in.position = pos; in.approachOnly = approachOnly;
+  in.plan = GraspPlan{true, ObjClass::SMALL, true, goal, ClassProfile{10, 1.0f, 200, 10}};
+  f.step(in);
+  in.nowMs = t0 + START_STABLE_MS;
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::PRE_TOUCH);
+  (void)a;
+  return f;
+}
+TEST(fsm_pretouch_fast_then_slow) {
+  Fsm f = startFsm(100);
+  FsmInputs in = ready(100); in.objectPresent = true;
+  in.plan = GraspPlan{true, ObjClass::SMALL, true, 9000, ClassProfile{10, 1.0f, 200, 10}};
+  f.step(in);
+  in.nowMs = 400;
+  MotorAction a = f.step(in);
+  CHECK(a.kind == MotorAction::MOVE);
+  CHECK_EQ(a.position, 9000); CHECK_EQ(a.speed, 61); CHECK_EQ(a.torque, 200);
+  in.nowMs = 450; in.position = 5000;
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  in.nowMs = 500; in.position = 8995;
+  a = f.step(in);
+  CHECK(a.kind == MotorAction::RUN);
+  CHECK_EQ(a.speed, 15); CHECK_EQ(a.torque, 200);
+  CHECK(f.preTouchStep() == PreTouchStep::SLOW);
+  CHECK(f.state() == State::PRE_TOUCH);
+}
+TEST(fsm_pretouch_goal_behind_skips_approach) {
+  Fsm f = startFsm(100);
+  FsmInputs in = ready(100); in.objectPresent = true; in.position = 9500;
+  in.plan = GraspPlan{true, ObjClass::SMALL, true, 9000, ClassProfile{10, 1.0f, 200, 10}};
+  f.step(in);
+  in.nowMs = 400;
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::PRE_TOUCH);
+  CHECK(a.kind == MotorAction::RUN);
+  CHECK_EQ(a.speed, 15);
+  CHECK(f.preTouchStep() == PreTouchStep::SLOW);
+}
+TEST(fsm_contact_during_approach_goes_grasp) {
+  Fsm f = approachFsm(100, 9000, 1968);
+  FsmInputs in = ready(450); in.position = 4000; in.anyFingerContact = true;
+  in.plan = GraspPlan{true, ObjClass::SMALL, true, 9000, ClassProfile{10, 1.0f, 200, 7}};   // live plan ignored: latched
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::GRASP);
+  CHECK(a.kind == MotorAction::RUN);
+  CHECK_EQ(a.speed, 10);
+}
+TEST(fsm_approach_stall_goes_slow) {
+  Fsm f = approachFsm(100, 9000, 1968);
+  FsmInputs in = ready(450); in.position = 8700;
+  f.step(in);                                    // progress: 1968 -> 8700
+  in.nowMs = 450 + APPROACH_STALL_MS - 1; f.step(in);
+  CHECK(f.preTouchStep() == PreTouchStep::APPROACH);
+  in.nowMs = 450 + APPROACH_STALL_MS;
+  MotorAction a = f.step(in);
+  CHECK(a.kind == MotorAction::RUN);
+  CHECK_EQ(a.speed, 15);
+  CHECK(f.preTouchStep() == PreTouchStep::SLOW);
+}
+TEST(fsm_approach_only_stops) {
+  Fsm f = approachFsm(100, 9000, 1968, true);
+  FsmInputs in = ready(450); in.position = 9000; in.approachOnly = true;
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::MONITOR);
+  CHECK(a.kind == MotorAction::HOLD);
+  CHECK(std::strstr(f.reason(), "approach only") != nullptr);
+}
+TEST(fsm_grasp_uses_class_force) {
+  GripConfig c = cfg(); c.graspForceN = 5.0f;    // legacy field no longer used
+  Fsm f = graspFsm(400);
+  f.setConfig(c);
+  FsmInputs in = ready(410);
+  in.anyFingerContact = true; in.position = 8000;
+  in.avgContactForce = 1.2f; in.channelsInContact = 2;
+  for (uint32_t s = 101; s < 101 + 3; s++) { in.fsrSeq = s; in.nowMs++; f.step(in); }
+  CHECK(f.state() == State::MONITOR);
+}
+TEST(fsm_delicate_grasp_speed) {
+  Fsm f = startFsm(100);
+  FsmInputs in = ready(100); in.objectPresent = true;
+  in.plan = GraspPlan{true, ObjClass::DELICATE, false, 0, ClassProfile{15, 0.4f, 150, 3}};
+  f.step(in);
+  in.nowMs = 400;
+  MotorAction a = f.step(in);
+  CHECK(a.kind == MotorAction::RUN); CHECK_EQ(a.torque, 150);
+  in.nowMs = 410; in.anyFingerContact = true; in.position = 6000;
+  a = f.step(in);
+  CHECK(f.state() == State::GRASP);
+  CHECK_EQ(a.speed, 3); CHECK_EQ(a.torque, 150);
 }
