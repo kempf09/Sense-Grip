@@ -44,8 +44,10 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
     must stay at or below 4 ms, and the control loop max below 10 ms. If the pass is above 4 ms,
     report it: the FSR oversampling is then reduced from 16 to 8.
 18. **First calibration sweep.** Gripper empty, nothing in view. Jog to fully open, Set OPEN zero,
-    Run calibration sweep. Note the touch position it reports and check the opening plot falls
-    from ~170 mm at OPEN towards the touch point; finger zones should be outlined on the heatmaps.
+    Run calibration sweep. Note the touch position it reports. The opening plot is dashed from
+    170 mm at OPEN (estimated: the SEN0628 cannot see the fingers there) to the first point where a
+    fingertip is seen, then solid down to the touch point; finger zones are outlined on the heatmaps.
+    Re-run the sweep after changing FSR resistors or contact force (the touch point moves).
 19. **Home after power cycles.** Three times, from different finger positions: power-cycle the
     servo (and ESP32), press Home. Note the residual each time; the fingers must end at OPEN.
 20. **Home with an object** between the fingers must fail ("residual ... object in the gripper?")

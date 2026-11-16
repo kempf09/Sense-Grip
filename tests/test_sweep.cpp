@@ -82,3 +82,32 @@ TEST(view_obstructed_by_something_besides_fingers) {
   for (int z : {30, 31, 38}) frame[1][z] = 300;        // something at 300 mm in background zones
   CHECK(viewObstructed(m, v.data(), v[150].pos, frame, 0x7));
 }
+
+// Hardware: near OPEN the finger zones read the background (not 0), so the plot started at the
+// background "radius" (~80 mm) instead of 170 mm. Readings that equal the open background, or
+// fall inside the invisible region, must not count as fingertip points.
+TEST(sweep_opening_ignores_background_in_finger_zones) {
+  auto v = makeSweep();
+  for (int i = 0; i < N; i++)
+    for (int s = 0; s < 3; s++) for (int z : {10, 11, 18, 19})
+      if (v[i].pos < 4000) v[i].mm[s][z] = 400;          // background until the finger enters at 4000
+      else v[i].mm[s][z] = (uint16_t)(400 - 1.5f * (i - 20)); // finger enters, moves along the ray
+  SweepModel m = analyze(v);
+  CHECK_NEAR(m.opening[0], 170.28f, 0.01);
+  CHECK(m.opening[5] > m.opening[25]);                   // extrapolated part above the first seen point
+  for (int i = 1; i < 100; i++) CHECK(m.opening[i] <= m.opening[i - 1] + 1e-3f);
+}
+
+// SEN0628 range error is about 10 %: a far zone may differ from the sweep by more than 25 mm
+// without the position being wrong.
+TEST(check_tolerates_ten_percent_at_long_range) {
+  auto v = makeSweep();
+  for (int i = 0; i < N; i++) for (int s = 0; s < 3; s++) for (int z : {10, 11, 18, 19})
+    v[i].mm[s][z] = v[i].pos < 3000 ? 0 : (uint16_t)(600 - 1.0f * i);
+  SweepModel m = analyze(v);
+  uint16_t frame[3][64];
+  std::memcpy(frame, v[150].mm, sizeof(frame));
+  for (int s = 0; s < 3; s++) for (int z : {10, 11, 18, 19}) frame[s][z] = (uint16_t)(frame[s][z] * 1.08f);
+  CHECK(!positionMismatch(m, v.data(), v[150].pos, frame, 0x7, 25.0f));
+  CHECK(positionMismatch(m, v.data(), v[40].pos, v[150].mm, 0x7, 25.0f));
+}

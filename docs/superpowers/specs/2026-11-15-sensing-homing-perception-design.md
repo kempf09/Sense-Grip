@@ -178,7 +178,16 @@ Derived and stored with the sweep:
 
 ### 7.1 Object points
 Per frame: zones that are not finger zones (for the current position, from the sweep) and not
-background (empty-gripper reading at that position, minus a margin of 15 mm) are object zones.
+background (empty-gripper reading at that position, minus a margin of max(15 mm, 20 % of the
+background reading)) are object zones.
+
+**SEN0628 range error ±10 % (operator, 2026-11-16).** Every mm value from the sensor carries
+about ±10 % of the reading. Comparisons against the sensor's own recorded sweep cancel most of
+it (the error is largely repeatable per zone); absolute values do not. So: width and class
+boundaries carry a ±10 % band (an object within 10 % of a boundary keeps the larger class, and
+the class override covers the rest); the pre-touch stand-off is x mm **plus** 10 % of the
+object range, so a reading 10 % short never drives the fingers into the object; the
+slow-to-contact phase covers the rest of the gap.
 Only points within **100 mm of the gripper axis** and **above the palm** count (rejects the
 table, string holder, people). A **Capture background** button (SEN0628 tab) re-records the
 empty-gripper background at the current position without a full sweep (for re-mounting /
@@ -246,7 +255,7 @@ a consistency mark against the size class. Display only.
 
 ## 10. Calls made by the designer (operator should check)
 - FSR sampling 100 Hz; default filter median 5; force limit on max(raw, filtered).
-- Homing speed/current 5 / 120; stall rule; residual limit 600; Home only on button press.
+- Homing speed 5, current = Close max current (120 stalled the sweep on hardware); stall rule; residual limit 600; Home only on button press.
 - Sweep step 100 counts, stored in LittleFS.
 - Background margin 15 mm; shape thresholds; class profile values; delicate values.
 - Slow-to-contact speed 15, grasp speed 5.

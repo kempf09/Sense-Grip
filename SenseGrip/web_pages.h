@@ -407,7 +407,10 @@ function drawSweep(){var c=$('swChart');if(!c||!c.clientWidth)return;var dpr=win
       ymax=Math.max.apply(null,O.concat([175])),L=40,B=20,X=function(v){return L+(w-L-8)*(v-x0)/((x1-x0)||1)},Y=function(v){return h-B-(h-B-8)*v/ymax};
   g.strokeStyle='#26313d';for(var t=0;t<=4;t++){var v=ymax*t/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(w-8,y);g.stroke();g.fillText(v.toFixed(0),4,y+4)}
   g.fillText(String(x0),L,h-4);g.fillText(String(x1),w-60,h-4);
-  g.strokeStyle='#4ea1ff';g.lineWidth=2;g.beginPath();P.forEach(function(p,i){var x=X(p),y=Y(O[i]);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
+  var fs=SW.firstSeen>=0?SW.firstSeen:P.length;g.strokeStyle='#4ea1ff';g.lineWidth=2;
+  g.setLineDash([5,4]);g.beginPath();P.forEach(function(p,i){if(i>fs)return;var x=X(p),y=Y(O[i]);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
+  g.setLineDash([]);g.beginPath();P.forEach(function(p,i){if(i<fs)return;var x=X(p),y=Y(O[i]);i>fs?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();g.lineWidth=1;
+  g.fillStyle='#8a96a3';g.fillText('dashed: fingers not seen (estimated)',L+4,h-B-6);
   g.fillStyle='#9be38b';g.fillText('OPEN',X(SW.openZero)+3,12);g.fillStyle='#ffb04e';g.fillText('touch',X(SW.touchRef)-34,12);
   g.strokeStyle='#9be38b';g.beginPath();g.moveTo(X(SW.openZero),8);g.lineTo(X(SW.openZero),h-B);g.stroke();
   g.strokeStyle='#ffb04e';g.beginPath();g.moveTo(X(SW.touchRef),8);g.lineTo(X(SW.touchRef),h-B);g.stroke();}

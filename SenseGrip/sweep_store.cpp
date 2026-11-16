@@ -4,7 +4,7 @@
 #include <Preferences.h>
 
 namespace {
-constexpr uint32_t MAGIC = 0x53575031;      // "SWP1"
+constexpr uint32_t MAGIC = 0x53575032;      // "SWP2": SWP1 files predate SweepModel::firstSeen and the background fix; re-run the sweep
 SweepSample* gSamples = nullptr;
 SweepSample* gScratch = nullptr;
 SweepModel gModel = {};

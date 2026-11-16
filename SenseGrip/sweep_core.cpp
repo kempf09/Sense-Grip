@@ -7,6 +7,7 @@ namespace {
 constexpr float FINGER_MIN_RANGE_MM = 30.0f;          // reading must change by more than this
 constexpr float FINGER_MIN_CORR = 0.8f;               // |Pearson r| with position
 constexpr int   MIN_COMPARED = 6;                      // zones needed for estimate / check
+constexpr float RANGE_ERR = 0.10f;                     // SEN0628 range error: about 10 % of the reading
 
 bool ok(uint16_t v) { return v > 0 && v < 4000; }
 int32_t fromOpen(int32_t pos, int32_t openZero, bool closePositive) { return closePositive ? pos - openZero : openZero - pos; }
@@ -67,12 +68,20 @@ void sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_t
     }
   }
   // 2. Opening per sample: innermost finger point (fingertips are the innermost finger parts).
+  //    A finger zone counts only once the finger is in it: outside the invisible region and
+  //    clearly away from what it read at OPEN (s[0], fingers not in view) - more than 30 mm and
+  //    more than twice the 10 % range error. Otherwise it is background, not a fingertip.
   for (int i = 0; i < n; i++) {
     float best = NAN;
+    if (fromOpen(s[i].pos, openZero, closePositive) <= FINGERS_INVISIBLE_COUNTS) { out.opening[i] = best; continue; }
     for (int sn = 0; sn < 3; sn++) {
       if (!((s[i].valid >> sn) & 1)) continue;
       for (int z = 0; z < 64; z++) {
         if (!((out.fingerZones[sn] >> z) & 1) || !ok(s[i].mm[sn][z])) continue;
+        if (((s[0].valid >> sn) & 1) && ok(s[0].mm[sn][z])) {
+          const float bg = s[0].mm[sn][z], d = std::fabs((float)s[i].mm[sn][z] - bg);
+          if (d <= FINGER_MIN_RANGE_MM || d <= 2 * RANGE_ERR * bg) continue;
+        }
         uint8_t row, col; rawToDisplay(cal[sn].orientation, (uint8_t)z, row, col);
         Vec3 p;
         if (!zonePoint((uint8_t)sn, row, col, s[i].mm[sn][z], cal[sn], p)) continue;
@@ -86,6 +95,7 @@ void sweepAnalyze(const SweepSample* s, int n, const SensorCalib cal[3], int32_t
   //    hold the last value at the closed end.
   int first = -1, last = -1;
   for (int i = 0; i < n; i++) if (!std::isnan(out.opening[i])) { if (first < 0) first = i; last = i; }
+  out.firstSeen = first;
   if (first < 0) { for (int i = 0; i < n; i++) out.opening[i] = OPENING_AT_OPEN_MM; return; }
   const float d0 = (float)fromOpen(s[first].pos, openZero, closePositive);
   for (int i = 0; i < first; i++) {
@@ -158,7 +168,8 @@ bool viewObstructed(const SweepModel& m, const SweepSample* s, int32_t pos, cons
       if ((m.fingerZones[sn] >> z) & 1) continue;
       const uint16_t f = frame[sn][z], r = ref.mm[sn][z];
       if (!ok(f)) continue;
-      if (!ok(r) || (float)f < (float)r - 50.0f) closer++;
+      // 50 mm, or twice the 10 % range error for far background (two readings, each +-10 %).
+      if (!ok(r) || (float)f < (float)r - std::fmax(50.0f, 2 * RANGE_ERR * r)) closer++;
     }
   }
   return closer >= 3;
@@ -167,8 +178,19 @@ bool viewObstructed(const SweepModel& m, const SweepSample* s, int32_t pos, cons
 bool positionMismatch(const SweepModel& m, const SweepSample* s, int32_t pos, const uint16_t frame[3][64],
                       uint8_t frameValid, float thresholdMm) {
   if (m.n <= 0) return false;
-  const int near = nearestSample(m, s, pos);
-  float mean;
-  if (compare(m, frame, frameValid, s[near].mm, s[near].valid, mean) < MIN_COMPARED) return false;
-  return mean > thresholdMm;
+  const SweepSample& ref = s[nearestSample(m, s, pos)];
+  // RMS of the difference in units of the per-zone tolerance: thresholdMm, or the 10 % range
+  // error of the recorded reading when that is larger (far zones).
+  double sum = 0; int n = 0;
+  for (int sn = 0; sn < 3; sn++) {
+    if (!((frameValid >> sn) & 1) || !((ref.valid >> sn) & 1)) continue;
+    for (int z = 0; z < 64; z++) {
+      if (!((m.fingerZones[sn] >> z) & 1) || !ok(frame[sn][z]) || !ok(ref.mm[sn][z])) continue;
+      const float tol = std::fmax(thresholdMm, RANGE_ERR * ref.mm[sn][z]);
+      const float e = ((float)frame[sn][z] - (float)ref.mm[sn][z]) / tol;
+      sum += e * e; n++;
+    }
+  }
+  if (n < MIN_COMPARED) return false;
+  return std::sqrt(sum / n) > 1.0;
 }

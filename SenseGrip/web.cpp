@@ -379,8 +379,8 @@ static void handleSweepGet() {
   server.send(200, "application/json", "");
   char b[96];
   const int n = (sweepLoaded() && s) ? m.n : 0;
-  snprintf(b, sizeof b, "{\"ok\":true,\"n\":%d,\"openZero\":%ld,\"touchRef\":%ld,\"positions\":[",
-           n, (long)m.openZero, (long)m.touchRef);
+  snprintf(b, sizeof b, "{\"ok\":true,\"n\":%d,\"openZero\":%ld,\"touchRef\":%ld,\"firstSeen\":%d,\"positions\":[",
+           n, (long)m.openZero, (long)m.touchRef, n ? m.firstSeen : -1);
   server.sendContent(b);
   for (int i = 0; i < n; i++) { snprintf(b, sizeof b, i ? ",%ld" : "%ld", (long)s[i].pos); server.sendContent(b); }
   server.sendContent("],\"opening\":[");

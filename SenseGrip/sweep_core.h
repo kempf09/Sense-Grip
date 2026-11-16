@@ -13,6 +13,7 @@ struct SweepModel {
   int n; int32_t openZero, touchRef;
   uint64_t fingerZones[3];                             // bit z (raw index) set: zone shows a finger
   float opening[SWEEP_MAX];                            // fingertip radius (mm) at sample i
+  int firstSeen;                                       // first sample with a measured fingertip (-1: none); earlier ones are extrapolated
 };
 struct PosEstimate { bool valid; int32_t pos; float score; };
 
