@@ -367,7 +367,9 @@ void sweepUpdate(Ctl& c, uint32_t now) {
   switch (c.swPhase) {
     case SW_TO_OPEN: {
       const int32_t err = sv.fb.position - c.cfg.openZero;
-      if (!sv.fb.moving && err <= (int32_t)c.cfg.openToleranceCounts && err >= -(int32_t)c.cfg.openToleranceCounts) {
+      // The servo can stop a little short of OPEN zero (seen 11-20 counts): stopped within
+      // OPEN_SETTLE_COUNTS is close enough (the first sample only has to be within 150).
+      if (!sv.fb.moving && err <= OPEN_SETTLE_COUNTS && err >= -OPEN_SETTLE_COUNTS) {
         servoStop();
         c.swPhase = SW_FRAMES; c.swPhaseMs = now;
         const TofSnapshot t = tofGet();

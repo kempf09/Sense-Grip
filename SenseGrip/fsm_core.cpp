@@ -103,14 +103,23 @@ MotorAction Fsm::run(const FsmInputs& in) {
     case State::MONITOR:
       return NO_ACTION;                          // holds until the operator presses Open
 
-    case State::OPEN:
-      if (std::abs((long)in.position - (long)cfg_.openZero) <= (long)cfg_.openToleranceCounts) {
+    case State::OPEN: {
+      const long off = std::abs((long)in.position - (long)cfg_.openZero);
+      if (std::abs((long)in.position - (long)progPos_) >= 5) { progPos_ = in.position; progMs_ = nowMs_; }
+      const bool settled = (uint32_t)(nowMs_ - progMs_) >= OPEN_SETTLE_MS && off <= OPEN_SETTLE_COUNTS;
+      if (off <= (long)cfg_.openToleranceCounts || settled) {
         openedSinceBoot_ = true;
         armed_ = false;
-        return enter(State::IDLE, "at OPEN");
+        if (off <= (long)cfg_.openToleranceCounts) return enter(State::IDLE, "at OPEN");
+        std::snprintf(scratch_, sizeof scratch_, "at OPEN (servo stopped %ld counts short)", off);
+        return enter(State::IDLE, scratch_);
       }
-      if (timedOut(in, cfg_.openTimeoutMs)) return enter(State::FAULT, "OPEN timeout");
+      if (timedOut(in, cfg_.openTimeoutMs)) {
+        std::snprintf(scratch_, sizeof scratch_, "OPEN timeout: stopped %ld counts from OPEN zero", off);
+        return enter(State::FAULT, scratch_);
+      }
       return NO_ACTION;
+    }
 
     case State::FAULT:
       return NO_ACTION;                          // waits for Reset
@@ -149,6 +158,7 @@ MotorAction Fsm::enter(State s, const char* why) {
     case State::MONITOR:
       return act(MotorAction::HOLD, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
     case State::OPEN:
+      progPos_ = lastPos_; progMs_ = nowMs_;
       return act(MotorAction::MOVE, cfg_.openSpeed, cfg_.openZero, cfg_.openTorqueLimit);
     case State::FAULT:
       if (prev != State::FAULT) {               // keep the original cause on re-entry

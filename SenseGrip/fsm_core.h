@@ -30,6 +30,10 @@ enum class PreTouchStep : uint8_t { APPROACH, SLOW };
 constexpr uint32_t START_STABLE_MS = 300;    // same class this long before moving (spec §7.3)
 constexpr uint32_t START_TIMEOUT_MS = 3000;  // ... or START gives up
 constexpr uint32_t APPROACH_STALL_MS = 400;  // no progress this long ends the fast approach
+// OPEN: the servo can stop a little short of its goal (seen 11-20 counts). Stopped (< 5 counts of
+// progress) for OPEN_SETTLE_MS within OPEN_SETTLE_COUNTS of OPEN zero counts as arrived.
+constexpr uint32_t OPEN_SETTLE_MS = 500;
+constexpr int32_t OPEN_SETTLE_COUNTS = 100;
 
 struct FsmInputs {
   uint32_t nowMs; Cmd cmd;

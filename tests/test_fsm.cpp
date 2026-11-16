@@ -833,3 +833,42 @@ TEST(fsm_approach_only_without_approach_stops) {
   CHECK(a.kind == MotorAction::HOLD);
   CHECK(std::strstr(f.reason(), "approach only") != nullptr);
 }
+
+// Hardware: after Home/sweep the jaw stopped 11-20 counts short of OPEN zero and OPEN timed out.
+static Fsm openingFsm(uint32_t t0, int32_t from) {
+  Fsm f(cfg());
+  FsmInputs in = ready(t0); in.position = from;
+  f.step(in);
+  cmd(f, in, Cmd::OPEN);
+  CHECK(f.state() == State::OPEN);
+  return f;
+}
+TEST(fsm_open_accepts_settled_short_stop) {
+  Fsm f = openingFsm(0, 9000);
+  FsmInputs in = ready(100); in.position = 1968 + 20;   // stopped 20 counts short
+  f.step(in);
+  CHECK(f.state() == State::OPEN);
+  in.nowMs = 100 + OPEN_SETTLE_MS - 1; f.step(in);
+  CHECK(f.state() == State::OPEN);
+  in.nowMs = 100 + OPEN_SETTLE_MS;
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::IDLE);
+  CHECK(a.kind == MotorAction::HOLD);
+  CHECK(f.openedSinceBoot());
+  CHECK(std::strstr(f.reason(), "20 counts short") != nullptr);
+}
+TEST(fsm_open_far_stop_still_times_out) {
+  Fsm f = openingFsm(0, 9000);
+  FsmInputs in = ready(100); in.position = 1968 + 300;  // stuck far from OPEN
+  for (uint32_t t = 100; t < 15000; t += 100) { in.nowMs = t; f.step(in); }
+  CHECK(f.state() == State::OPEN);
+  in.nowMs = 15000; f.step(in);
+  CHECK(f.state() == State::FAULT);
+  CHECK(std::strstr(f.reason(), "300") != nullptr);
+}
+TEST(fsm_open_moving_is_not_settled) {
+  Fsm f = openingFsm(0, 9000);
+  FsmInputs in = ready(0);
+  for (uint32_t t = 0; t <= 1000; t += 100) { in.nowMs = t; in.position = 2100 - (int32_t)t / 10; f.step(in); }
+  CHECK(f.state() == State::OPEN);                       // still creeping in: keep waiting
+}
