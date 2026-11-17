@@ -145,6 +145,13 @@ const char* profileProblem(const GripConfig& c) {
   return nullptr;
 }
 
+bool upgradeConfig(GripConfig& c, uint8_t fromVersion) {
+  bool ch = false;
+  const GripConfig d = defaultConfig();
+  if (fromVersion < 7 && c.maxForceN < d.maxForceN) { c.maxForceN = d.maxForceN; ch = true; }
+  return ch;
+}
+
 SlipParams slipParamsOf(const GripConfig& c) {
   SlipParams p;
   p.fsrDropFrac = c.slipFsrDropFrac; p.fsrWindowMs = c.slipFsrWindowMs; p.fsrMinForceN = c.slipFsrMinForceN;

@@ -39,6 +39,9 @@ constexpr uint32_t APPROACH_STALL_MS = 400;  // no progress this long ends the f
 // progress) for OPEN_SETTLE_MS within OPEN_SETTLE_COUNTS of OPEN zero counts as arrived.
 constexpr uint32_t OPEN_SETTLE_MS = 500;
 constexpr int32_t OPEN_SETTLE_COUNTS = 100;
+// Slow close and GRASP move at 15 / 3-10 speed units (~50 counts/s each): their timeout is the
+// configured one, or 1.5 x the time to cover the distance left to the close limit + 2 s if longer.
+constexpr uint32_t COUNTS_PER_S_PER_SPEED = 50;
 
 struct FsmInputs {
   uint32_t nowMs; Cmd cmd;
@@ -113,6 +116,7 @@ private:
   bool pastCloseLimit(int32_t pos) const;
   bool outsideTravel(int32_t pos) const;
   bool timedOut(const FsmInputs& in, uint32_t limitMs) const;
+  uint32_t travelTimeoutMs(uint32_t baseMs, uint16_t speed) const;
   void setReason(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 
   GripConfig cfg_;
@@ -130,6 +134,7 @@ private:
   bool planEverValid_ = false; bool haveCls_ = false; bool startFirst_ = false; ObjClass stableCls_ = ObjClass::SMALL; uint32_t clsSinceMs_ = 0;
   int32_t lastPos_ = 0; int32_t progPos_ = 0; uint32_t progMs_ = 0;
   bool approachOnly_ = false;
+  uint32_t stepTimeoutMs_ = 0;            // PRE_TOUCH slow step / GRASP: distance-scaled timeout
   bool tightening_ = false; uint8_t tightenCount_ = 0; TightenEvent tevent_ = TightenEvent::NONE;
   bool stopPending_ = false;               // STOP queued by motorFailed()
   uint32_t stopDueMs_ = 0;                 // ... not before this time

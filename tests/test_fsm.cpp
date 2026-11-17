@@ -244,12 +244,13 @@ TEST(fsm_grasp_close_limit_faults) {
 }
 
 TEST(fsm_pretouch_timeout_faults) {
-  Fsm f = preTouchFsm(0xFFFFFF00u);           // entry near uint32 wrap
-  FsmInputs in = ready(0xFFFFFF00u + 7999);
+  Fsm f = preTouchFsm(0xFFFFFF00u);           // entry near uint32 wrap, slow step from 1968
+  const uint32_t lim = (19102 - 1968) * 1500 / (15 * 50) + 2000;   // distance-scaled slow-step timeout
+  FsmInputs in = ready(0xFFFFFF00u + lim - 1);
   in.position = 6000;
   f.step(in);
   CHECK(f.state() == State::PRE_TOUCH);
-  in.nowMs = 0xFFFFFF00u + 8000;              // wraps past zero
+  in.nowMs = 0xFFFFFF00u + lim;               // wraps past zero
   MotorAction a = f.step(in);
   CHECK(f.state() == State::FAULT);
   CHECK(a.kind == MotorAction::STOP);
@@ -809,17 +810,18 @@ TEST(fsm_delicate_grasp_speed) {
   CHECK(f.state() == State::GRASP);
   CHECK_EQ(a.speed, 3); CHECK_EQ(a.torque, 150);
 }
-// Hardware curve: a 25 mm tube needs ~2.5 s approach + ~6.7 s slow close; each step gets the
-// full PRE_TOUCH timeout (8 s).
+// Hardware curve: a 25 mm tube needs ~2.5 s approach + ~6.7 s slow close; the slow step gets its
+// own timeout (the larger of 8 s and the distance-scaled one).
 TEST(fsm_pretouch_timeout_restarts_at_slow_step) {
   Fsm f = approachFsm(100, 9000, 1968);
   FsmInputs in = ready(400 + 2500); in.position = 9000;
-  MotorAction a = f.step(in);                    // arrival after 2.5 s -> SLOW
+  MotorAction a = f.step(in);                    // arrival after 2.5 s -> SLOW from 9000
   CHECK(a.kind == MotorAction::RUN);
-  in.nowMs = 400 + 2500 + 7999; in.position = 12000;
+  const uint32_t lim = (19102 - 9000) * 1500 / (15 * 50) + 2000;
+  in.nowMs = 400 + 2500 + lim - 1; in.position = 12000;
   f.step(in);
-  CHECK(f.state() == State::PRE_TOUCH);           // 10.5 s in PRE_TOUCH, 8 s in SLOW: still fine
-  in.nowMs = 400 + 2500 + 8000;
+  CHECK(f.state() == State::PRE_TOUCH);           // well past 8 s in PRE_TOUCH: still fine
+  in.nowMs = 400 + 2500 + lim;
   f.step(in);
   CHECK(f.state() == State::FAULT);
 }
@@ -924,7 +926,7 @@ TEST(fsm_tighten_failure_returns_to_monitor_not_fault) {
   CHECK(std::strstr(f.reason(), "tighten failed") != nullptr);
   // timeout during tighten also returns to MONITOR
   in.position = 8000; in.slipEvent = true; f.step(in); CHECK(f.state() == State::GRASP); f.takeTightenEvent();
-  in.slipEvent = false; in.nowMs += cfg().graspTimeoutMs; f.step(in);
+  in.slipEvent = false; in.nowMs += (19102 - 8000) * 1500 / (10 * 50) + 2000; f.step(in);
   CHECK(f.state() == State::MONITOR);
   CHECK(f.takeTightenEvent() == TightenEvent::FAILED);
 }
@@ -979,4 +981,24 @@ TEST(fsm_tighten_count_resets_for_next_grasp) {
   in.cmd = Cmd::ARM; f.step(in); in.cmd = Cmd::NONE; in.objectPresent = true; f.step(in);
   CHECK(f.state() == State::START);
   CHECK_EQ((int)f.tightenCount(), 0);
+}
+
+// ---- review fixes (2026-11-17) ----
+// Slow close from OPEN without a fast approach: travel 1968 -> 19102 at speed 15 (~750 counts/s)
+// needs ~23 s; the 8 s PRE_TOUCH timeout must stretch to the distance left.
+TEST(fsm_slow_step_timeout_scales_with_distance) {
+  Fsm f = startFsm(100);                                    // ready(): approach = false, position 1968
+  FsmInputs in = ready(100); in.objectPresent = true;
+  f.step(in); in.nowMs = 400; f.step(in);
+  CHECK(f.state() == State::PRE_TOUCH);
+  in.position = 9000; in.nowMs = 400 + 20000; f.step(in);
+  CHECK(f.state() == State::PRE_TOUCH);                    // 20 s in: still closing, no timeout
+  in.nowMs = 400 + 60000; f.step(in);
+  CHECK(f.state() == State::FAULT);                          // but not forever
+}
+TEST(fsm_grasp_timeout_scales_with_distance) {
+  Fsm f = graspFsm(1000);                                    // GRASP at position 8000, speed 10
+  FsmInputs in = ready(1000); in.anyFingerContact = true; in.position = 8000;
+  in.nowMs = 1000 + 6000; f.step(in);
+  CHECK(f.state() == State::GRASP);                          // > 5 s config timeout, travel left is long
 }

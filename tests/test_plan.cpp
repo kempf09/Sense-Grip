@@ -77,8 +77,9 @@ TEST(plan_invalid_reasons) {
 TEST(plan_goal_never_past_close_limit) {
   build();
   GripConfig c = cfg(); c.smallStandoffMm = 0;
-  // opening target 0.5 + 0 + 0.1 mm is never reached (table ends at 1 mm, position 9900)
-  PlanResult r = buildPlan(c, true, &M, S.data(), obj(1, 1), Override::AUTO, false, 0);
+  // opening target 0.5 + 0 + 1.0 = 1.5 mm is reached at ~9850, beyond the close limit 9800
+  PlanResult r = buildPlan(c, true, &M, S.data(), obj(1, 10), Override::AUTO, false, 0);
+  CHECK(r.plan.approach);
   CHECK_EQ(r.plan.approachGoal, 9800);
 }
 TEST(plan_goal_behind_returns_position) {
@@ -86,4 +87,21 @@ TEST(plan_goal_behind_returns_position) {
   // Present opening at 5000 is 50 mm; a 120 mm object needs 60 + 10 + 10 = 80 mm: already closer.
   PlanResult r = buildPlan(cfg(), true, &M, S.data(), obj(120, 100), Override::AUTO, false, 5000);
   CHECK_EQ(r.plan.approachGoal, 5000);
+}
+
+// Review fix: a target opening below the whole curve (or a sweep that never saw the fingertips)
+// must not turn into a full-speed approach to the close limit.
+TEST(plan_no_fast_approach_when_target_unreachable) {
+  build();
+  GripConfig c = cfg(); c.smallStandoffMm = 0;
+  PlanResult r = buildPlan(c, true, &M, S.data(), obj(1, 1), Override::AUTO, false, 0);
+  CHECK(r.plan.valid);
+  CHECK(!r.plan.approach);
+}
+TEST(plan_no_fast_approach_without_seen_fingertips) {
+  build(); M.firstSeen = -1;
+  PlanResult r = buildPlan(cfg(), true, &M, S.data(), obj(60, 100), Override::AUTO, false, 0);
+  CHECK(r.plan.valid);
+  CHECK(!r.plan.approach);
+  M.firstSeen = 0;
 }

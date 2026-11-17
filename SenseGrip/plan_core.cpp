@@ -17,9 +17,16 @@ PlanResult buildPlan(const GripConfig& cfg, bool homed, const SweepModel* m, con
   r.plan.approachGoal = position;
   if (measured) {
     const float target = obj.widthMm / 2 + r.plan.prof.standoffMm + 0.1f * obj.rangeMm;
-    int32_t goal = positionForOpening(*m, s, position, target);
-    if (cfg.closePositive ? goal > cfg.closeLimit : goal < cfg.closeLimit) goal = cfg.closeLimit;
-    r.plan.approachGoal = goal;
+    // No fast approach when the curve never gets that small (the goal would be the close limit,
+    // reached at full speed) or the sweep never saw the fingertips (the curve is a guess).
+    const float minOpening = m->opening[m->n - 1];        // the curve is non-increasing
+    if (m->firstSeen < 0 || target < minOpening) {
+      r.plan.approach = false;
+    } else {
+      int32_t goal = positionForOpening(*m, s, position, target);
+      if (cfg.closePositive ? goal > cfg.closeLimit : goal < cfg.closeLimit) goal = cfg.closeLimit;
+      r.plan.approachGoal = goal;
+    }
   }
   if (!r.plan.valid) r.why = !homed ? "not homed" : !sweep ? "no sweep stored (run the calibration sweep)"
                                                          : "object not measured (no points in view)";

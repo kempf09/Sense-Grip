@@ -57,6 +57,7 @@ bool loadNew(GripConfig& out, bool& upgraded) {
       memcpy(&tmp, raw, keep);
       upgraded = ver != CFG_VERSION;
       if (ver <= 3) tmp.limitsValid = false;   // v4+ limits were taken in the stable frame
+      upgradeConfig(tmp, ver);                  // e.g. < v7: Max force 3 N -> 8 N
       out = tmp; ok = true;
     }
   }

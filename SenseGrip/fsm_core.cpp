@@ -86,19 +86,20 @@ MotorAction Fsm::run(const FsmInputs& in) {
           if (approachOnly_) return enter(State::MONITOR, "approach only: stopped at pre-touch position");
           preStep_ = PreTouchStep::SLOW;
           entryMs_ = nowMs_;                       // the slow step gets its own PRE_TOUCH timeout
+          stepTimeoutMs_ = travelTimeoutMs(cfg_.preTouchTimeoutMs, cfg_.contactSpeed);
           setReason("pre-touch position reached: slow to contact");
           return act(MotorAction::RUN, cfg_.contactSpeed, 0, plan_.prof.maxCurrent);
         }
       }
       if (pastCloseLimit(in.position)) return enter(State::FAULT, "no contact before close limit");
-      if (timedOut(in, cfg_.preTouchTimeoutMs)) return enter(State::FAULT, "PRE_TOUCH timeout");
+      if (timedOut(in, preStep_ == PreTouchStep::SLOW ? stepTimeoutMs_ : cfg_.preTouchTimeoutMs)) return enter(State::FAULT, "PRE_TOUCH timeout");
       return NO_ACTION;
 
     case State::GRASP:
       if (graspReached(in)) return tightening_ ? tightenEnd(true, "tighten done: higher force reached") : enter(State::MONITOR, "grasp force reached");
       if (pastCloseLimit(in.position))
         return tightening_ ? tightenEnd(false, "tighten failed: close limit reached") : enter(State::FAULT, "target force not reached before close limit");
-      if (timedOut(in, cfg_.graspTimeoutMs)) return tightening_ ? tightenEnd(false, "tighten failed: timeout") : enter(State::FAULT, "GRASP timeout");
+      if (timedOut(in, stepTimeoutMs_)) return tightening_ ? tightenEnd(false, "tighten failed: timeout") : enter(State::FAULT, "GRASP timeout");
       return NO_ACTION;
 
     case State::MONITOR:
@@ -151,12 +152,14 @@ MotorAction Fsm::enter(State s, const char* why) {
         return act(MotorAction::MOVE, cfg_.approachSpeed, plan_.approachGoal, plan_.prof.maxCurrent);
       }
       preStep_ = PreTouchStep::SLOW;
+      stepTimeoutMs_ = travelTimeoutMs(cfg_.preTouchTimeoutMs, cfg_.contactSpeed);
       if (approachOnly_) return enter(State::MONITOR, "approach only: no pre-touch position to move to (not measured, or already there)");
       return act(MotorAction::RUN, cfg_.contactSpeed, 0, plan_.prof.maxCurrent);
     }
     case State::GRASP:
       graspCount_ = 0;
       graspSeq_ = fsrSeq_;                       // count only samples newer than the contact one
+      stepTimeoutMs_ = travelTimeoutMs(cfg_.graspTimeoutMs, plan_.prof.graspSpeed);
       return act(MotorAction::RUN, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
     case State::MONITOR:
       return act(MotorAction::HOLD, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
@@ -342,6 +345,13 @@ bool Fsm::outsideTravel(int32_t pos) const {
   int32_t slack = cfg_.limitSlackCounts;
   if (cfg_.closePositive) return pos < cfg_.openZero - slack || pos > cfg_.closeLimit + slack;
   return pos > cfg_.openZero + slack || pos < cfg_.closeLimit - slack;
+}
+
+uint32_t Fsm::travelTimeoutMs(uint32_t baseMs, uint16_t speed) const {
+  const long dist = std::abs((long)cfg_.closeLimit - (long)lastPos_);
+  const uint32_t rate = (uint32_t)(speed ? speed : 1) * COUNTS_PER_S_PER_SPEED;
+  const uint32_t need = (uint32_t)((uint64_t)dist * 1500 / rate) + 2000;
+  return need > baseMs ? need : baseMs;
 }
 
 bool Fsm::timedOut(const FsmInputs& in, uint32_t limitMs) const {

@@ -194,3 +194,14 @@ TEST(config_v8_size_constants) {
   CHECK_EQ((unsigned)GRIP_CONFIG_V8_BLOB_SIZE, 176u);       // sizeof(GripConfig) of the v8 build (measured)
   CHECK(GRIP_CONFIG_V8_BLOB_SIZE >= GRIP_CONFIG_V8_SIZE);
 }
+TEST(config_upgrade_raises_old_max_force) {
+  GripConfig c = defaultConfig(); c.maxForceN = 3.0f;
+  CHECK(upgradeConfig(c, 6));
+  CHECK_NEAR(c.maxForceN, 8.0f, 1e-6);
+  CHECK(profileProblem(c) == nullptr);
+  c.maxForceN = 12.0f;
+  CHECK(!upgradeConfig(c, 6));                              // a higher setting is kept
+  CHECK_NEAR(c.maxForceN, 12.0f, 1e-6);
+  c.maxForceN = 3.0f;
+  CHECK(!upgradeConfig(c, 9));                              // current version: untouched
+}
