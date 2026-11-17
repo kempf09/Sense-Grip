@@ -148,7 +148,7 @@ const char* profileProblem(const GripConfig& c) {
 bool upgradeConfig(GripConfig& c, uint8_t fromVersion) {
   bool ch = false;
   const GripConfig d = defaultConfig();
-  if (fromVersion < 7 && c.maxForceN < d.maxForceN) { c.maxForceN = d.maxForceN; ch = true; }
+  if (fromVersion < 9 && c.maxForceN < d.maxForceN) { c.maxForceN = d.maxForceN; ch = true; }
   return ch;
 }
 

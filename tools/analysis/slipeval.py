@@ -76,7 +76,8 @@ class Replay:
         if p.returncode != 0:
             raise RuntimeError(f"replay failed on {rec.name}: {p.stderr.strip()[:300]}")
         out = parse_replay_csv(p.stdout, rec)
-        out["warnings"] = [ln.strip() for ln in p.stderr.splitlines() if ln.startswith("warning:")]
+        out["warnings"] = [ln.strip().replace(rec.path, rec.name).replace(rec.tof_path or "\0", rec.name[:-4] + "_tof.csv")
+                           for ln in p.stderr.splitlines() if ln.startswith("warning:")]
         return out
 
 

@@ -49,8 +49,9 @@ struct GripConfig {
 };
 SlipParams slipParamsOf(const GripConfig& c);
 // Fixes for configs stored by older versions; returns true when something changed.
-// < v7: Max force was 3 N, below the large class (4 N) and too close to the medium class: raised
-// to the current default (a higher stored value is kept).
+// < v9: Max force could still be the old 3 N default (phase 3 builds saved it unchanged), below
+// the large class (4 N) and too close to the medium class: raised to the current default (a
+// higher stored value is kept).
 bool upgradeConfig(GripConfig& c, uint8_t fromVersion);
 
 enum class ObjClass : uint8_t { SMALL = 0, MEDIUM = 1, LARGE = 2, DELICATE = 3 };

@@ -205,3 +205,11 @@ TEST(config_upgrade_raises_old_max_force) {
   c.maxForceN = 3.0f;
   CHECK(!upgradeConfig(c, 9));                              // current version: untouched
 }
+TEST(config_upgrade_raises_max_force_from_v7_and_v8_too) {
+  // Phase 3 builds (v7/v8) saved configs while Max force was still 3 N on the board.
+  for (uint8_t v : {(uint8_t)7, (uint8_t)8}) {
+    GripConfig c = defaultConfig(); c.maxForceN = 3.0f;
+    CHECK(upgradeConfig(c, v));
+    CHECK_NEAR(c.maxForceN, 8.0f, 1e-6);
+  }
+}

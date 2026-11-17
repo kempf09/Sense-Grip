@@ -47,7 +47,7 @@ bool logEventPop(LogEventFifo& q, LogEvent& e, uint8_t& a, uint8_t& a2);
 // Raw SEN0628 frame stream: one record per new frame set (any sensor updated), recorded whether
 // or not the gripper is homed. rowSeq = seq of the data-log row written next (links the streams).
 struct TofFrameRec { uint32_t seq, tMs, rowSeq; int32_t pos; uint8_t valid; uint16_t mm[3][64]; };
-constexpr uint32_t TOF_LOG_CAP = 6000;        // ~5 min at ~15-20 frame sets/s
+constexpr uint32_t TOF_LOG_CAP = 15000;       // one record per sensor update (~30-60/s): ~4-8 min, 6 MB PSRAM
 struct TofRing { TofFrameRec* rows; uint32_t cap; volatile uint32_t next; };
 void tofLogInit(TofRing& r, TofFrameRec* storage, uint32_t cap);
 void tofLogPush(TofRing& r, TofFrameRec f);

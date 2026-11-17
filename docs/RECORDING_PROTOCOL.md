@@ -10,8 +10,9 @@ files, so what is not recorded cannot be tuned.
    start with **`phase4-slip`** (or a later build name). "last reset" should not say CRASH or
    BROWN-OUT; if it does, note it.
 2. Use a **laptop** for the dashboard, not a phone (a phone that sleeps stops the collection).
-   Keep the Combined tab open the whole session. Reloading is fine (recordings continue), but
-   closing the page for more than ~5 minutes during a grasp leaves a gap.
+   Keep the Combined tab open and visible the whole session (a hidden tab is slowed down by the
+   browser). Reloading is fine (recordings continue), but closing the page for more than ~3
+   minutes during a grasp leaves a gap (marked "gap" in the list).
 3. Press **Home**. A calibration sweep must be stored (Servo tab plot shows a curve).
 4. FSR tab: **Max force N ≥ 8** (otherwise large grasps are refused).
 5. SEN0628 tab: with the gripper empty and nothing in view, press **Capture background**.
@@ -23,6 +24,10 @@ files, so what is not recorded cannot be tuned.
 8. SEN0628 tab → Slip detection: leave **Tighten on slip unticked**. The detector still runs
    with placeholder thresholds and may show SLIP badges; ignore them (they are logged and help
    the tuning). Do not change the slip settings during the session.
+
+**If you Arm, present an object and nothing happens (stays IDLE, armed):** the object is not
+"present" yet: SEN0628 tab → Config → **Detect distance mm** → 150, Save, try again. Small
+centred objects sit ~85–100 mm from the sensors; the default 80 mm can miss them.
 
 ## 1. Mark keys (dashboard, Combined tab — work anywhere on the page)
 
