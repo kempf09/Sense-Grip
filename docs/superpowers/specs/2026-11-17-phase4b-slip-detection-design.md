@@ -53,7 +53,9 @@ until the recordings show it is reliable while the fingers cover the object).
 
 **Fusion (`mode`):** 0 = FSR only, 1 = ToF only, 2 = either (default until tuned), 3 = both
 within `fuseWindowMs` (500 ms). A slip **event** fires on the first flagged step, then nothing
-for `holdoffMs` (1500 ms). Event argument: which features were flagged (`slip:fsr`, `slip:tof`,
+for `holdoffMs` (1500 ms); when the holdoff ends the detector takes a **new baseline** (pad
+forces, frame, measurement), since the object may now rest in a new place or at a lower force
+(found on synthetic data: without it a displaced object re-fires every holdoff). Event argument: which features were flagged (`slip:fsr`, `slip:tof`,
 `slip:fsr+tof`).
 
 All parameters live in `GripConfig` (v9), editable on the SEN0628 tab, and are the replay

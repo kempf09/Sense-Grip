@@ -156,3 +156,28 @@ TEST(slip_tof_single_glitch_record_does_not_confirm) {
   for (int k = 0; k < 30; k++, t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (k % 5) == 0; if (slipStep(st, p, x).slip) fired = true; }
   CHECK(!fired);
 }
+
+// Analysis finding: an object left displaced after a slip kept the ToF flag set against the old
+// baseline and re-fired every holdoff. After an event the detector re-baselines once the holdoff
+// has passed.
+TEST(slip_rebaseline_after_event_no_refire_when_displaced) {
+  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  uint32_t t = 0;
+  for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
+  for (int z = 0; z < 10; z++) FR[1][z] = 260;            // object moved and stays there
+  int events = 0;
+  for (; t < 9000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; if (slipStep(st, p, x).slip) events++; }
+  CHECK_EQ(events, 1);
+  for (int z = 0; z < 10; z++) FR[1][z] = 320;            // ... and a second real move is still caught
+  for (; t < 10000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; if (slipStep(st, p, x).slip) events++; }
+  CHECK_EQ(events, 2);
+}
+TEST(slip_rebaseline_after_event_force_settles_lower) {
+  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  uint32_t t = 0; hold(st, p, t, 1000, 2.0f);
+  int events = 0;
+  for (; t < 8000; t += 10) if (slipStep(st, p, in(t, t < 1100 ? 2.0f : 1.0f)).slip) events++;   // drop to 1 N and stay
+  CHECK_EQ(events, 1);
+  for (; t < 8500; t += 10) if (slipStep(st, p, in(t, t < 8100 ? 1.0f : 0.5f)).slip) events++;   // -50 % from the new level
+  CHECK_EQ(events, 2);
+}

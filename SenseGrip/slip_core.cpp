@@ -77,6 +77,17 @@ SlipOut slipStep(SlipState& s, const SlipParams& p, const SlipInput& in) {
     if (in.objValid) { s.range0 = in.rangeMm; s.height0 = in.heightMm; for (int k = 0; k < 3; k++) s.rad0[k] = in.rad[k]; }
   }
   o.armed = true;
+  // After an event the object may rest in a new place / at a lower force: once the holdoff is
+  // over, that becomes the new baseline (otherwise it would re-fire every holdoff).
+  if (s.rebasePending && (int32_t)(t - s.rebaseAt) >= 0) {
+    s.rebasePending = false;
+    for (int i = 0; i < 6; i++) s.base[i] = in.force[i];
+    if (s.haveFrame && in.frame) { std::memcpy(s.frame0, in.frame, sizeof s.frame0); s.valid0 = in.frameValid; s.baseFrame = true; }
+    s.obj0 = in.objValid;
+    if (in.objValid) { s.range0 = in.rangeMm; s.height0 = in.heightMm; for (int k = 0; k < 3; k++) s.rad0[k] = in.rad[k]; }
+    s.tofOver = false; s.fsrOver = false; s.tofZones = 0;
+    s.haveFsrFlag = s.haveTofFlag = false;
+  }
 
   // FSR: largest relative drop from the window maximum, for pads loaded at baseline.
   const uint32_t win = p.fsrWindowMs > 600 ? 600 : p.fsrWindowMs;
@@ -149,6 +160,7 @@ SlipOut slipStep(SlipState& s, const SlipParams& p, const SlipInput& in) {
   if (p.mode == 3 && cand) o.reason = SLIP_FSR | SLIP_TOF;
   if (cand && (!s.holdActive || (int32_t)(t - s.holdUntil) >= 0)) {
     o.slip = true; s.holdActive = true; s.holdUntil = t + p.holdoffMs;
+    s.rebasePending = true; s.rebaseAt = t + p.holdoffMs;
   }
   return o;
 }

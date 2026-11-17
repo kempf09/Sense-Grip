@@ -55,6 +55,7 @@ struct SlipState {
   uint32_t histT[SLIP_HIST]; float hist[SLIP_HIST][6]; int histHead, histN;
   uint16_t frame0[3][64]; uint8_t valid0;
   bool tofOver; uint32_t tofSince; int tofZones;
+  bool rebasePending; uint32_t rebaseAt;     // re-baseline when the holdoff after an event ends
   bool obj0; float range0, height0, rad0[3];
 };
 void slipReset(SlipState& s);

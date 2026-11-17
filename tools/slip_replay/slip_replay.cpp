@@ -7,7 +7,9 @@
 // it has just logged; frames are parsed with tofParseCsvLine. At main-file row seq S the detector
 // gets every frame with row_seq <= S not used yet (the firmware hands a frame to the row written
 // next, which is the row_seq it logs), the last one being the current frame.
-// --force-active runs the detector on every row (manual recordings never reach MONITOR).
+// --force-active (manual recordings never reach MONITOR): the detector runs from the first row on
+// which any pad carries at least fsrMinForceN (latched), so the baseline is the held object, not
+// open fingers.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -87,12 +89,16 @@ int main(int argc, char** argv) {
   }
 
   SlipState st; slipReset(st);
+  bool forcedOn = false;
   static uint16_t frame[3][64]; uint8_t fvalid = 0; bool haveFrame = false; size_t ti = 0;
   std::printf("seq,t_ms,state,active,fsr_drop,fsr_flag,tof_zones,tof_disp_mm,tof_flag,slip,reason\n");
   for (const LogRow& r : rows) {
     SlipInput in{};
     slipInputFromRow(r, in);
-    if (forceActive) in.active = true;
+    if (forceActive) {
+      if (!forcedOn) for (float f : in.force) if (f >= p.fsrMinForceN) forcedOn = true;   // NaN never >=
+      in.active = forcedOn;
+    }
     while (ti < frames.size() && frames[ti].rowSeq <= r.seq) {
       std::memcpy(frame, frames[ti].mm, sizeof frame); fvalid = frames[ti].valid;
       haveFrame = true; in.frameNew = true; ti++;
