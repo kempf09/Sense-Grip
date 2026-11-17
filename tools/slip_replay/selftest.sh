@@ -7,7 +7,7 @@ hdr='seq,t_ms,state,step,armed,pos,speed,current_mA,load_pct,f1,f2,f3,f4,f5,f6,r
 { echo "# synthetic"; echo "$hdr"
   for i in $(seq 0 299); do
     f=2.000; [ "$i" -ge 200 ] && f=0.800
-    echo "$i,$((1000+i*10)),MONITOR,-,1,9000,0,0,0.0,$f,1.500,0.000,0.000,0.000,0.000,$f,1.500,0,0,0,0,1,1,0,0,0,,,,,,,medium,,"
+    echo "$i,$((1000+i*10)),MONITOR,-,1,9000,0,0,0.0,$f,1.500,0.000,0.000,0.000,0.000,$f,1.500,0.000,0.000,0.000,0.000,1,1,0,0,0,,,,,,,medium,,"
   done; } > "$dir/r.csv"
 out=$(tools/slip_replay/slip_replay --rows "$dir/r.csv")
 n=$(echo "$out" | awk -F, 'NR>1 && $10==1' | wc -l)

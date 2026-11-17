@@ -1,10 +1,14 @@
 #include "log_core.h"
 #include <climits>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include "contact_core.h"
 #include "fsm_core.h"
 #include "object_core.h"
+#include "slip_core.h"
+#include <cstdlib>
+#include <cstring>
 
 const char LOG_CSV_HEADER[] =
     "seq,t_ms,state,step,armed,pos,speed,current_mA,load_pct,"
@@ -131,4 +135,100 @@ int tofCsvLine(const TofFrameRec& f, char* buf, int len) {
   for (int s = 0; s < 3; s++) for (int z = 0; z < 64; z++) w.put(",%u", (unsigned)f.mm[s][z]);
   w.put("\n");
   return w.n;
+}
+
+namespace {
+// Splits a CSV line in place into fields (no quoting in these formats). Returns the field count.
+int fieldsOf(char* s, char** f, int maxF) {
+  int n = 0; f[n++] = s;
+  for (char* p = s; *p; p++) {
+    if (*p == '\n' || *p == '\r') { *p = 0; break; }
+    if (*p == ',') { *p = 0; if (n >= maxF) return -1; f[n++] = p + 1; }
+  }
+  return n;
+}
+bool parseU(const char* s, unsigned long& v) { char* e; v = std::strtoul(s, &e, 10); return *s && !*e; }
+bool parseL(const char* s, long& v) { char* e; v = std::strtol(s, &e, 10); return *s && !*e; }
+// "<int>.<frac>" with exactly `dec` decimals (as written by milli/tenth) -> scaled int; "" -> INT16_MIN.
+bool parseFixed(const char* s, int dec, int16_t& v) {
+  if (!*s) { v = INT16_MIN; return true; }
+  bool neg = false; if (*s == '-') { neg = true; s++; }
+  long ip = 0; const char* p = s;
+  if (*p < '0' || *p > '9') return false;
+  while (*p >= '0' && *p <= '9') ip = ip * 10 + (*p++ - '0');
+  if (*p != '.') return false;
+  p++; long fp = 0; int k = 0;
+  while (*p >= '0' && *p <= '9') { fp = fp * 10 + (*p++ - '0'); k++; }
+  if (*p || k != dec) return false;
+  long x = ip; for (int i = 0; i < dec; i++) x *= 10;
+  x += fp; if (neg) x = -x;
+  v = (int16_t)x; return true;
+}
+int stateIndex(const char* n) { for (int i = 0; i <= (int)State::FAULT; i++) if (!std::strcmp(n, stateName((State)i))) return i; return -1; }
+}  // namespace
+
+bool logParseCsvLine(const char* line, LogRow& r) {
+  static char buf[512];
+  std::strncpy(buf, line, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+  char* f[40];
+  if (fieldsOf(buf, f, 40) != 35) return false;
+  r = LogRow{};
+  unsigned long u; long l;
+  if (!parseU(f[0], u)) return false;
+  r.seq = (uint32_t)u;
+  if (!parseU(f[1], u)) return false;
+  r.tMs = (uint32_t)u;
+  const int st = stateIndex(f[2]); if (st < 0) return false; r.state = (uint8_t)st;
+  r.step = !std::strcmp(f[3], "approach") ? 1 : !std::strcmp(f[3], "slow") ? 2 : 0;
+  if (!parseU(f[4], u)) return false;
+  r.armed = (uint8_t)u;
+  if (!parseL(f[5], l)) return false;
+  r.pos = (int32_t)l;
+  if (!parseL(f[6], l)) return false;
+  r.speed = (int16_t)l;
+  if (!parseL(f[7], l)) return false;
+  r.currentMa = (int16_t)l;
+  if (!parseFixed(f[8], 1, r.loadPermille)) return false;
+  for (int i = 0; i < 6; i++) if (!parseFixed(f[9 + i], 3, r.fmN[i]) || !parseFixed(f[15 + i], 3, r.rmN[i])) return false;
+  for (int k = 0; k < 3; k++) { if (!parseU(f[21 + k], u)) return false; if (u) r.contacts |= (uint8_t)(1u << k); }
+  if (!parseU(f[24], u)) return false;
+  r.tofSeq = (uint16_t)u;
+  if (!parseU(f[25], u)) return false;
+  r.objValid = (uint8_t)u;
+  if (!parseFixed(f[26], 1, r.width10) || !parseFixed(f[27], 1, r.range10) || !parseFixed(f[28], 1, r.height10)) return false;
+  for (int k = 0; k < 3; k++) if (!parseFixed(f[29 + k], 1, r.rad10[k])) return false;
+  r.cls = 255;
+  for (int c = 0; c <= 3; c++) if (!std::strcmp(f[32], className((ObjClass)c))) r.cls = (uint8_t)c;
+  for (int s = 0; s <= 3; s++) if (!std::strcmp(f[33], shapeName((Shape)s))) r.shape = (uint8_t)s;
+  return true;                                   // the event column is not needed for replay
+}
+
+bool tofParseCsvLine(const char* line, TofFrameRec& t) {
+  static char buf[2048];
+  std::strncpy(buf, line, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+  char* f[200];
+  if (fieldsOf(buf, f, 200) != 197) return false;
+  unsigned long u; long l;
+  if (!parseU(f[0], u)) return false;
+  t.seq = (uint32_t)u;
+  if (!parseU(f[1], u)) return false;
+  t.tMs = (uint32_t)u;
+  if (!parseU(f[2], u)) return false;
+  t.rowSeq = (uint32_t)u;
+  if (!parseL(f[3], l)) return false;
+  t.pos = (int32_t)l;
+  if (!parseU(f[4], u)) return false;
+  t.valid = (uint8_t)u;
+  for (int s = 0; s < 3; s++) for (int z = 0; z < 64; z++) { if (!parseU(f[5 + s * 64 + z], u)) return false; t.mm[s][z] = (uint16_t)u; }
+  return true;
+}
+
+void slipInputFromRow(const LogRow& r, SlipInput& in) {
+  in.tMs = r.tMs;
+  in.active = r.state == (uint8_t)State::MONITOR;
+  for (int i = 0; i < 6; i++) in.force[i] = r.fmN[i] == INT16_MIN ? NAN : (float)r.fmN[i] / 1000.0f;
+  in.objValid = r.objValid != 0;
+  auto mm = [](int16_t v) { return v == INT16_MIN ? NAN : (float)v / 10.0f; };
+  in.rangeMm = mm(r.range10); in.heightMm = mm(r.height10);
+  for (int k = 0; k < 3; k++) in.rad[k] = mm(r.rad10[k]);
 }

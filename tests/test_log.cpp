@@ -124,3 +124,53 @@ TEST(log_event_fifo_keeps_order_and_drops_when_full) {
   for (int i = 0; i < LOG_EVENT_FIFO; i++) CHECK(logEventPush(q, LogEvent::CONTACT, 1, 1));
   CHECK(!logEventPush(q, LogEvent::CONTACT, 1, 1));
 }
+
+// ---- replay equivalence by construction: CSV round trip + shared detector input ----
+#include "slip_core.h"
+#include <cmath>
+static bool sameInput(const SlipInput& a, const SlipInput& b) {
+  auto same = [](float x, float y) { return (std::isnan(x) && std::isnan(y)) || x == y; };
+  if (a.tMs != b.tMs || a.active != b.active || a.objValid != b.objValid) return false;
+  for (int i = 0; i < 6; i++) if (!same(a.force[i], b.force[i])) return false;
+  if (!same(a.rangeMm, b.rangeMm) || !same(a.heightMm, b.heightMm)) return false;
+  for (int k = 0; k < 3; k++) if (!same(a.rad[k], b.rad[k])) return false;
+  return true;
+}
+TEST(log_csv_round_trip_gives_identical_detector_input) {
+  unsigned seed = 12345;
+  auto rnd = [&](int lo, int hi) { seed = seed * 1103515245u + 12345u; return lo + (int)((seed >> 8) % (unsigned)(hi - lo + 1)); };
+  for (int n = 0; n < 500; n++) {
+    LogRow r = blank();
+    r.seq = (uint32_t)rnd(0, 1000000); r.tMs = (uint32_t)rnd(0, 2000000000); r.state = (uint8_t)rnd(0, 6);
+    r.step = (uint8_t)rnd(0, 2); r.armed = (uint8_t)rnd(0, 1); r.pos = rnd(-30000, 30000);
+    r.speed = (int16_t)rnd(-3000, 3000); r.currentMa = (int16_t)rnd(-3000, 3000); r.loadPermille = (int16_t)rnd(-1000, 1000);
+    for (int i = 0; i < 6; i++) { r.fmN[i] = rnd(0, 9) == 0 ? INT16_MIN : (int16_t)rnd(-500, 30000); r.rmN[i] = (int16_t)rnd(-500, 30000); }
+    r.contacts = (uint8_t)rnd(0, 7); r.tofSeq = (uint16_t)rnd(0, 65535); r.objValid = (uint8_t)rnd(0, 1);
+    r.width10 = rnd(0, 3) == 0 ? INT16_MIN : (int16_t)rnd(0, 2500); r.range10 = (int16_t)rnd(0, 4000);
+    r.height10 = (int16_t)rnd(-100, 2000); for (auto& x : r.rad10) x = rnd(0, 3) == 0 ? INT16_MIN : (int16_t)rnd(0, 1500);
+    r.cls = rnd(0, 4) == 4 ? 255 : (uint8_t)rnd(0, 3); r.shape = (uint8_t)rnd(0, 3);
+    char b[512]; logCsvLine(r, b, sizeof b);
+    LogRow p{};
+    CHECK(logParseCsvLine(b, p));
+    CHECK_EQ(p.seq, r.seq); CHECK_EQ(p.tMs, r.tMs); CHECK_EQ((int)p.state, (int)r.state);
+    for (int i = 0; i < 6; i++) CHECK_EQ(p.fmN[i], r.fmN[i]);
+    CHECK_EQ(p.width10, r.width10); CHECK_EQ(p.range10, r.range10);
+    SlipInput a{}, c{};
+    slipInputFromRow(r, a); slipInputFromRow(p, c);
+    CHECK(sameInput(a, c));
+  }
+}
+TEST(log_parse_rejects_garbage) {
+  LogRow p{};
+  CHECK(!logParseCsvLine("seq,t_ms,state", p));
+  CHECK(!logParseCsvLine("1,2,NOPE,-,0,0,0,0,0.0,,,,,,,,,,,,,0,0,0,0,0,,,,,,,,,", p));
+}
+TEST(tof_csv_round_trip) {
+  TofFrameRec f{}; f.seq = 9; f.tMs = 1234; f.rowSeq = 77; f.pos = -5; f.valid = 6;
+  for (int s = 0; s < 3; s++) for (int z = 0; z < 64; z++) f.mm[s][z] = (uint16_t)(s * 1000 + z * 7);
+  static char b[2048]; tofCsvLine(f, b, sizeof b);
+  TofFrameRec g{};
+  CHECK(tofParseCsvLine(b, g));
+  CHECK_EQ(g.rowSeq, 77u); CHECK_EQ((int)g.valid, 6); CHECK_EQ(g.pos, -5);
+  CHECK(std::memcmp(g.mm, f.mm, sizeof f.mm) == 0);
+}

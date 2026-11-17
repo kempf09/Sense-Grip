@@ -52,5 +52,12 @@ struct TofRing { TofFrameRec* rows; uint32_t cap; volatile uint32_t next; };
 void tofLogInit(TofRing& r, TofFrameRec* storage, uint32_t cap);
 void tofLogPush(TofRing& r, TofFrameRec f);
 uint32_t tofLogRead(const TofRing& r, uint32_t fromSeq, uint32_t max, TofFrameRec* out, uint32_t& oldest, uint32_t& nextOut);
+// Parsing back what logCsvLine / tofCsvLine wrote (offline replay). false on a malformed line.
+bool logParseCsvLine(const char* line, LogRow& out);
+bool tofParseCsvLine(const char* line, TofFrameRec& out);
+// The slip detector's input from a logged row (the firmware and tools/slip_replay both use this,
+// so the replay sees exactly what the firmware saw). Frame fields are left to the caller.
+struct SlipInput;
+void slipInputFromRow(const LogRow& r, SlipInput& in);
 extern const char TOF_CSV_HEADER[];           // seq,t_ms,row_seq,pos,valid,s1_z00..s3_z63 (raw zone index)
 int tofCsvLine(const TofFrameRec& f, char* buf, int len);

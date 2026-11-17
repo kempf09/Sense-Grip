@@ -98,6 +98,7 @@ struct Ctl {
   // Phase 4a log: events waiting for a row (one event per row)
   State logState = State::IDLE; FirstContact logFirst[3] = {FirstContact::NONE, FirstContact::NONE, FirstContact::NONE};
   LogEventFifo evq = {};                             // events waiting for a row (one per row)
+  LogRow lastRow = {}; bool haveRow = false;          // the row just logged: the slip detector's input
   uint32_t logTofOk[3] = {0, 0, 0};                  // last SEN0628 frame counters seen by the frame log
   // Phase 4b slip detection
   SlipState slip = {}; SlipOut slipOut = {};
@@ -847,7 +848,6 @@ int16_t toTenth(float v, bool ok) {
 }
 
 void logStep(Ctl& c, uint32_t now) {
-  if (!gLog.rows) return;
   const State st = c.fsm.state();
   LogRow r{};
   r.tMs = now; r.state = (uint8_t)st; r.armed = c.fsm.armed();
@@ -888,7 +888,9 @@ void logStep(Ctl& c, uint32_t now) {
       logEventPush(c.evq, LogEvent::CONTACT, (uint8_t)(f + 1), (uint8_t)c.logFirst[f]);
     }
   logEventPop(c.evq, r.ev, r.evArg, r.evArg2);
-  logPush(gLog, r);
+  r.seq = gLog.next;
+  c.lastRow = r; c.haveRow = true;
+  if (gLog.rows) logPush(gLog, r);
 }
 
 // Slip detection (phase 4b): runs at the FSR rate, active in MONITOR only (reset otherwise, so a
@@ -896,19 +898,16 @@ void logStep(Ctl& c, uint32_t now) {
 void slipUpdate(Ctl& c, uint32_t now) {
   const State st = c.fsm.state();
   if (st == State::START || st == State::OPEN) c.slipCount = 0;   // the SLIP badge clears with Open
+  if (!c.haveRow) return;
+  // Exactly the logged values (rounded as in the CSV): tools/slip_replay rebuilds the same input
+  // from the CSV with the same function, so replay and firmware agree by construction.
   SlipInput in{};
-  in.tMs = now;
-  in.active = st == State::MONITOR;
-  const FsrSnapshot fs = fsrGet();
-  for (int i = 0; i < 6; i++) in.force[i] = (c.cfg.fsrEnabled & (1u << i)) ? fs.force[i] : NAN;
+  slipInputFromRow(c.lastRow, in);
   // Frames exactly as logged (tofLogStep runs before the row is written), so the replay tool
   // gives a frame to the same row the firmware did.
   in.frameNew = c.slipFrameNew; c.slipFrameNew = false;
   in.frame = c.slipHaveFrame ? c.slipFrame : nullptr;
   in.frameValid = c.slipFrameValid;
-  const ObjectMeasure m = smoothed(c.sm, now);
-  in.objValid = m.valid; in.rangeMm = m.rangeMm; in.heightMm = m.heightMm;
-  for (int k = 0; k < 3; k++) in.rad[k] = m.sensorRadiusMm[k];
   c.slipOut = slipStep(c.slip, slipParamsOf(c.cfg), in);
   if (c.slipOut.slip) {
     c.slipPending = true;
