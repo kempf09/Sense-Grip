@@ -1,2 +1,3 @@
 tests/run_tests
 .superpowers/
+tools/slip_replay/slip_replay

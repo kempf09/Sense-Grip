@@ -6,6 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make -C tests
+      - run: make -C tools/slip_replay && tools/slip_replay/selftest.sh
   esp32:
     runs-on: ubuntu-latest
     steps:

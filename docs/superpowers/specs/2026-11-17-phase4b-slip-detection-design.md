@@ -46,8 +46,9 @@ contact to no contact counts as a drop of 1. The short window ignores slow relax
 were valid (1..3999 mm) and ≤ `tofNearMm` (350 mm) at baseline and now differ by more than
 max(`tofZoneMm` (12 mm), `tofZoneFrac` (0.10) × baseline). Flag when the count ≥ `tofZoneCount`
 (4) on `tofConfirmFrames` (2) consecutive frame sets. Secondary: the smoothed object measurement
-(range, height, per-sensor radius) moved by more than max(`tofDispMm` (10), 10 % of range) —
-reported as a feature, used when `mode` includes it.
+(range, height, per-sensor radius) moved by more than max(`tofDispMm`, 10 % of range) —
+always reported as a feature; it also sets the ToF flag only when `tofDispMm` > 0 (default 0 = off
+until the recordings show it is reliable while the fingers cover the object).
 
 **Fusion (`mode`):** 0 = FSR only, 1 = ToF only, 2 = either (default until tuned), 3 = both
 within `fuseWindowMs` (500 ms). A slip **event** fires on the first flagged step, then nothing
