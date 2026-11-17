@@ -73,9 +73,10 @@ select{width:auto;min-width:150px;display:block}
    <div class="panel"><h2>Last action</h2><div id="last" class="small">-</div></div>
    <div class="panel"><h2>Recordings</h2>
     <div class="row"><button class="b" id="recMan">Start manual recording</button><span class="small" id="recStat">collector: starting...</span></div>
+    <div class="row" style="margin-top:6px"><span class="small">Mark:</span><button class="b" data-mark="pull">Pull (P)</button><button class="b" data-mark="twist">Twist (T)</button><button class="b" data-mark="slide">Slide (S)</button><button class="b" data-mark="other">Other (O)</button><button class="b" data-mark="end">End (E)</button></div>
     <div id="recList" class="small" style="margin-top:6px">-</div>
     <div class="btns" style="margin-top:6px"><button class="b" id="recAll">Download all</button><button class="b" id="recClr">Clear all</button></div>
-    <p class="small">Every grasp (START until 1 s after it is back at OPEN, or after FAULT) is recorded at 100 Hz while this page is open and kept in this browser. CSV: forces in N (f = filtered, r = raw, FSR1..6), position in servo counts, sizes in mm.</p></div>
+    <p class="small">Every grasp (1 s before START until 1 s after it is back at IDLE, or after FAULT) is recorded at 100 Hz while this page is open and kept in this browser, with the raw SEN0628 frames in a second file (_tof.csv). Mark keys P/T/S/O/E work anywhere on the page (not while typing in a field). CSV: forces in N (f = filtered, r = raw, FSR1..6), position in servo counts, sizes in mm.</p></div>
    <div class="panel"><div class="btns">
      <button class="b" id="bHome">Home</button><button class="b pri" id="bArm">Arm</button><button class="b" id="bOpen">Open</button><button class="b" id="bReset">Reset</button></div>
      <button class="estop" id="estop">E-STOP</button></div>
@@ -566,7 +567,7 @@ function pollTof(){
 }
 
 /* ---------- Recordings (phase 4a) ---------- */
-var LOG={next:null,boot:null},REC=null,MAN=null,RECS=[],DB=null,logBusy=false,logRows=0,logT0=Date.now(),recSeqN=0;
+var TLOG={next:null},PRE=[],PRET=[],LOG={next:null,boot:null},REC=null,MAN=null,RECS=[],DB=null,logBusy=false,logRows=0,logT0=Date.now(),recSeqN=0;
 function idbOpen(){return new Promise(function(res){try{var q=indexedDB.open('sensegrip',1);
   q.onupgradeneeded=function(){var d=q.result;d.createObjectStore('meta');d.createObjectStore('recs',{keyPath:'id'})};
   q.onsuccess=function(){res(q.result)};q.onerror=function(){res(null)}}catch(e){res(null)}})}
@@ -575,23 +576,35 @@ function idbDel(id){if(!DB)return;try{DB.transaction('recs','readwrite').objectS
 function idbGet(st,k){return new Promise(function(res){if(!DB)return res(null);try{var q=DB.transaction(st).objectStore(st).get(k);q.onsuccess=function(){res(q.result||null)};q.onerror=function(){res(null)}}catch(e){res(null)}})}
 function idbAll(){return new Promise(function(res){if(!DB)return res([]);try{var q=DB.transaction('recs').objectStore('recs').getAll();q.onsuccess=function(){res(q.result||[])};q.onerror=function(){res([])}}catch(e){res([])}})}
 function stamp(t){var d=new Date(t),p=function(n){return(n<10?'0':'')+n};return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds())}
-function newRec(kind){recSeqN++;return{id:Date.now()+Math.random(),kind:kind,n:recSeqN,start:Date.now(),rows:[],cls:'',width:'',final:'',gap:false,endAt:null,sawMon:false,open:true,
+function newRec(kind){recSeqN++;return{id:Date.now()+Math.random(),kind:kind,n:recSeqN,start:Date.now(),rows:[],tof:[],marks:0,cls:'',width:'',final:'',gap:false,endAt:null,sawMon:false,open:true,
   fw:(S&&S.diag&&S.diag.fw)||'',cfg:CFG?JSON.parse(JSON.stringify(CFG)):null}}
 function recName(r){return (r.kind==='grasp'?'grasp_':'manual_')+r.n+(r.cls?'_'+r.cls:'')+'_'+stamp(r.start)+'.csv'}
 function closeRec(r,why){r.open=false;if(why)r.final=r.final||why;idbPut('recs',r);if(RECS.indexOf(r)<0)RECS.push(r);renderRecs()}
+function onTofLine(line){var rs=+line.split(',')[2];
+  PRET.push(line);if(PRET.length>40)PRET.shift();               // ~2 s pre-roll
+  if(REC&&rs>=REC.firstSeq)REC.tof.push(line);
+  if(MAN&&rs>=MAN.firstSeq)MAN.tof.push(line)}
 function onLogLine(line){
   var f=line.split(','),seq=+f[0],st=f[2];logRows++;
+  PRE.push(line);if(PRE.length>100)PRE.shift();                  // 1 s pre-roll
+  if(f[34]&&f[34].slice(0,5)==='mark:'){if(REC)REC.marks++;if(MAN)MAN.marks++}
   if(REC){REC.rows.push(line);
     if(!REC.cls&&f[32])REC.cls=f[32];if(!REC.width&&f[26])REC.width=f[26];
     if(st==='MONITOR')REC.sawMon=true;
     if(REC.endAt===null&&(st==='IDLE'||st==='FAULT')){REC.endAt=seq+100;REC.final=st==='FAULT'?'FAULT':(REC.sawMon?'grasped':'aborted')}
     if(REC.endAt!==null&&seq>=REC.endAt){closeRec(REC);REC=null}}
-  else if(st==='START'){REC=newRec('grasp');REC.rows.push(line);RECS.push(REC)}
-  if(MAN)MAN.rows.push(line);
+  else if(st==='START'){REC=newRec('grasp');REC.rows=PRE.slice();REC.firstSeq=+REC.rows[0].split(',')[0];
+    REC.tof=PRET.filter(function(t){return +t.split(',')[2]>=REC.firstSeq});RECS.push(REC)}
+  if(MAN){if(MAN.firstSeq===undefined)MAN.firstSeq=seq;MAN.rows.push(line)}
 }
+function tofPoll(){var from=TLOG.next===null?0:TLOG.next;
+  return fetch('/api/log/tof?from='+from+'&max=60',{cache:'no-store'}).then(function(r){if(!r.ok)return;
+    var nx=+r.headers.get('X-Log-Next'),boot=r.headers.get('X-Log-Boot');
+    return r.text().then(function(t){if(LOG.boot!==null&&boot!==LOG.boot){TLOG.next=null;return}
+      t.split('\n').forEach(function(l){if(l&&l.slice(0,4)!=='seq,')onTofLine(l)});TLOG.next=nx})}).catch(function(){})}
 function logPoll(){if(logBusy)return;logBusy=true;
   var from=LOG.next===null?0:LOG.next;
-  fetch('/api/log?from='+from+'&max=600',{cache:'no-store'}).then(function(r){
+  tofPoll().then(function(){return fetch('/api/log?from='+from+'&max=600',{cache:'no-store'})}).then(function(r){
     if(!r.ok)throw 0;
     var nx=+r.headers.get('X-Log-Next'),old=+r.headers.get('X-Log-Oldest'),boot=r.headers.get('X-Log-Boot');
     return r.text().then(function(t){
@@ -599,7 +612,7 @@ function logPoll(){if(logBusy)return;logBusy=true;
       LOG.boot=boot;
       if(LOG.next!==null&&old>LOG.next){if(REC)REC.gap=true;if(MAN)MAN.gap=true}
       t.split('\n').forEach(function(l){if(l&&l.slice(0,4)!=='seq,')onLogLine(l)});
-      LOG.next=nx;idbPut('meta',{next:LOG.next,boot:LOG.boot},'log');
+      LOG.next=nx;idbPut('meta',{next:LOG.next,boot:LOG.boot,tnext:TLOG.next},'log');
     })}).catch(function(){}).then(function(){logBusy=false;
       var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
 function csvOf(r){var c=r.cfg||{},k=r.cls,L=[];
@@ -610,21 +623,30 @@ function csvOf(r){var c=r.cfg||{},k=r.cls,L=[];
   L.push('# units: forces N (f=filtered, r=raw, FSR1..6), pos servo counts, current mA, load %, sizes mm');
   return L.join('\n')+'\n'+LOG_HEADER+'\n'+r.rows.join('\n')+'\n'}
 var LOG_HEADER='seq,t_ms,state,step,armed,pos,speed,current_mA,load_pct,f1,f2,f3,f4,f5,f6,r1,r2,r3,r4,r5,r6,c1,c2,c3,tof_seq,obj_valid,width_mm,range_mm,height_mm,rad1,rad2,rad3,cls,shape,event';
-function dl(r){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csvOf(r)],{type:'text/csv'}));a.download=recName(r);document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1000)}
+var TOF_HEADER=null;
+function tofHeader(){if(TOF_HEADER)return TOF_HEADER;var h='seq,t_ms,row_seq,pos,valid';for(var s=1;s<=3;s++)for(var z=0;z<64;z++)h+=',s'+s+'_z'+(z<10?'0':'')+z;return TOF_HEADER=h}
+function save(name,text){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'text/csv'}));a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1000)}
+function dl(r){save(recName(r),csvOf(r));
+  if(r.tof&&r.tof.length)setTimeout(function(){save(recName(r).replace(/\.csv$/,'_tof.csv'),
+    '# SenseGrip raw SEN0628 frames for '+recName(r)+' | mm per zone, raw zone index (row-major as read), 0 or >=4000 = no target | row_seq links to seq in the main file\n'+tofHeader()+'\n'+r.tof.join('\n')+'\n')},400)}
 function renderRecs(){var l=$('recList');if(!RECS.length){l.textContent='No recordings yet';return}
   var h='<table><tr><th>Name</th><th>s</th><th>rows</th><th>class</th><th>width</th><th>result</th><th></th></tr>';
   RECS.slice().reverse().forEach(function(r){var i=RECS.indexOf(r),d=r.rows.length?((+r.rows[r.rows.length-1].split(',')[1]-(+r.rows[0].split(',')[1]))/1000).toFixed(1):'0';
-    h+='<tr><td>'+esc(recName(r))+(r.gap?' <b style="color:#ffb04e">gap</b>':'')+(r.open?' (recording)':'')+'</td><td>'+d+'</td><td>'+r.rows.length+'</td><td>'+esc(r.cls||'-')+'</td><td>'+esc(r.width||'-')+'</td><td>'+esc(r.final||'-')+'</td>'+
+    h+='<tr><td>'+esc(recName(r))+(r.gap?' <b style="color:#ffb04e">gap</b>':'')+(r.open?' (recording)':'')+(r.marks?' · '+r.marks+' marks':'')+(r.tof&&r.tof.length?' · '+r.tof.length+' frames':'')+'</td><td>'+d+'</td><td>'+r.rows.length+'</td><td>'+esc(r.cls||'-')+'</td><td>'+esc(r.width||'-')+'</td><td>'+esc(r.final||'-')+'</td>'+
       '<td><button class="b" data-dl="'+i+'">CSV</button> <button class="b" data-rm="'+i+'">Delete</button></td></tr>'});
   l.innerHTML=h+'</table>';
   l.querySelectorAll('[data-dl]').forEach(function(b){b.onclick=function(){dl(RECS[+b.dataset.dl])}});
   l.querySelectorAll('[data-rm]').forEach(function(b){b.onclick=function(){var r=RECS[+b.dataset.rm];if(r.open){toast('Still recording');return}if(!confirm('Delete '+recName(r)+'?'))return;idbDel(r.id);RECS.splice(+b.dataset.rm,1);renderRecs()}})}
 $('recMan').onclick=function(){if(MAN){closeRec(MAN,'manual stop');MAN=null;this.textContent='Start manual recording'}else{MAN=newRec('manual');RECS.push(MAN);this.textContent='Stop manual recording';renderRecs()}};
-$('recAll').onclick=function(){var k=0;RECS.forEach(function(r){if(!r.open)setTimeout(function(){dl(r)},300*k++)})};
+$('recAll').onclick=function(){var k=0;RECS.forEach(function(r){if(!r.open)setTimeout(function(){dl(r)},900*k++)})};
+function mark(t){post('/api/log/mark?type='+t).then(function(j){if(j)toast('Mark: '+t)})}
+document.querySelectorAll('[data-mark]').forEach(function(b){b.onclick=function(){mark(b.dataset.mark)}});
+document.addEventListener('keydown',function(ev){var tg=(ev.target&&ev.target.tagName)||'';if(/INPUT|SELECT|TEXTAREA/.test(tg)||ev.ctrlKey||ev.metaKey||ev.altKey||ev.repeat)return;
+  var k={p:'pull',t:'twist',s:'slide',o:'other',e:'end'}[ev.key.toLowerCase()];if(k){ev.preventDefault();mark(k)}});
 $('recClr').onclick=function(){if(!confirm('Delete every recording stored in this browser?'))return;RECS.filter(function(r){return !r.open}).forEach(function(r){idbDel(r.id)});RECS=RECS.filter(function(r){return r.open});renderRecs()};
 setInterval(function(){[REC,MAN].forEach(function(r){if(r)idbPut('recs',r)})},5000);
 idbOpen().then(function(d){DB=d;return Promise.all([idbGet('meta','log'),idbAll()])}).then(function(v){
-  var m=v[0];if(m){LOG.next=m.next;LOG.boot=m.boot}
+  var m=v[0];if(m){LOG.next=m.next;LOG.boot=m.boot;TLOG.next=m.tnext===undefined?null:m.tnext}
   RECS=(v[1]||[]).sort(function(a,b){return a.start-b.start});
   RECS.forEach(function(r){recSeqN=Math.max(recSeqN,r.n||0);if(r.open){if(r.kind==='grasp'&&!REC)REC=r;else{r.open=false;r.final=r.final||'page closed';idbPut('recs',r)}}});
   renderRecs();setInterval(logPoll,250)});

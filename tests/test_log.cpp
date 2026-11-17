@@ -79,3 +79,48 @@ TEST(log_csv_empty_fields) {
   CHECK(v[34] == "contact:F2:distal");
   CHECK(std::string(b).find("nan") == std::string::npos);
 }
+
+// ---- phase 4: raw SEN0628 frame stream, marks, slip/tighten events ----
+TEST(tof_log_push_read_and_csv) {
+  static TofFrameRec st[4]; TofRing r; tofLogInit(r, st, 4);
+  for (int i = 0; i < 6; i++) {
+    TofFrameRec f{}; f.tMs = 10 * i; f.rowSeq = 100 + i; f.pos = -5; f.valid = 0x5;
+    for (int s = 0; s < 3; s++) for (int z = 0; z < 64; z++) f.mm[s][z] = (uint16_t)(s * 1000 + z);
+    tofLogPush(r, f);
+  }
+  TofFrameRec out[8]; uint32_t oldest, nx;
+  CHECK_EQ(tofLogRead(r, 0, 8, out, oldest, nx), 4u);
+  CHECK_EQ(oldest, 2u); CHECK_EQ(out[0].seq, 2u); CHECK_EQ(nx, 6u);
+  const std::string h = TOF_CSV_HEADER;
+  CHECK_EQ(fields(h), 5 + 192);
+  CHECK(h.rfind("seq,t_ms,row_seq,pos,valid,s1_z00,", 0) == 0);
+  CHECK(h.compare(h.size() - 6, 6, "s3_z63") == 0);
+  static char b[2048];
+  const int n = tofCsvLine(out[0], b, sizeof b);
+  CHECK(n > 0 && b[n - 1] == '\n');
+  auto v = split(b);
+  CHECK_EQ((int)v.size(), 197);
+  CHECK(v[0] == "2" && v[2] == "102" && v[3] == "-5" && v[4] == "5");
+  CHECK(v[5] == "0" && v[5 + 64] == "1000" && v[196] == "2063");
+}
+TEST(log_csv_marks_and_slip_events) {
+  LogRow r = blank(); char b[512];
+  r.ev = LogEvent::MARK; r.evArg = 2; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "mark:twist");
+  r.evArg = 5; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "mark:end");
+  r.ev = LogEvent::SLIP; r.evArg = 3; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "slip:fsr+tof");
+  r.evArg = 1; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "slip:fsr");
+  r.ev = LogEvent::TIGHTEN; r.evArg = 2; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "tighten:2");
+  r.ev = LogEvent::TIGHTEN_DONE; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "tighten_done");
+  r.ev = LogEvent::TIGHTEN_FAILED; logCsvLine(r, b, sizeof b); CHECK(split(b)[34] == "tighten_failed");
+}
+TEST(log_event_fifo_keeps_order_and_drops_when_full) {
+  LogEventFifo q; logEventsReset(q);
+  CHECK(logEventPush(q, LogEvent::MARK, 1, 0));
+  CHECK(logEventPush(q, LogEvent::STATE, 3, 0));
+  LogEvent e; uint8_t a, a2;
+  CHECK(logEventPop(q, e, a, a2)); CHECK(e == LogEvent::MARK); CHECK_EQ((int)a, 1);
+  CHECK(logEventPop(q, e, a, a2)); CHECK(e == LogEvent::STATE);
+  CHECK(!logEventPop(q, e, a, a2));
+  for (int i = 0; i < LOG_EVENT_FIFO; i++) CHECK(logEventPush(q, LogEvent::CONTACT, 1, 1));
+  CHECK(!logEventPush(q, LogEvent::CONTACT, 1, 1));
+}

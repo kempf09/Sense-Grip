@@ -4,7 +4,13 @@
 #pragma once
 #include <stdint.h>
 
-enum class LogEvent : uint8_t { NONE, STATE, CONTACT, GRASP_REACHED };
+// Event column. The text form is fixed (recordings depend on it):
+//   STATE      state:<NAME>                 CONTACT  contact:F<n>:<proximal|distal|both>
+//   GRASP_REACHED grasp_reached             MARK     mark:<pull|twist|slide|other|end> (operator)
+//   SLIP       slip:<fsr|tof|fsr+tof> (arg bit0 fsr, bit1 tof)
+//   TIGHTEN    tighten:<n>   TIGHTEN_DONE tighten_done   TIGHTEN_FAILED tighten_failed
+enum class LogEvent : uint8_t { NONE, STATE, CONTACT, GRASP_REACHED, MARK, SLIP, TIGHTEN, TIGHTEN_DONE, TIGHTEN_FAILED };
+enum : uint8_t { MARK_PULL = 1, MARK_TWIST, MARK_SLIDE, MARK_OTHER, MARK_END };
 
 struct LogRow {
   uint32_t seq, tMs;
@@ -30,3 +36,21 @@ uint32_t logRead(const LogRing& r, uint32_t fromSeq, uint32_t max, LogRow* out, 
 
 extern const char LOG_CSV_HEADER[];           // 35 column names, no newline
 int logCsvLine(const LogRow& row, char* buf, int len);   // one CSV line incl. '\n'; returns length
+
+// Events waiting for a row: one event per row, in order (a mark is never lost behind a state change).
+constexpr int LOG_EVENT_FIFO = 16;
+struct LogEventFifo { LogEvent ev[LOG_EVENT_FIFO]; uint8_t a[LOG_EVENT_FIFO], a2[LOG_EVENT_FIFO]; uint8_t head, n; };
+void logEventsReset(LogEventFifo& q);
+bool logEventPush(LogEventFifo& q, LogEvent e, uint8_t a, uint8_t a2);   // false when full (event dropped)
+bool logEventPop(LogEventFifo& q, LogEvent& e, uint8_t& a, uint8_t& a2);
+
+// Raw SEN0628 frame stream: one record per new frame set (any sensor updated), recorded whether
+// or not the gripper is homed. rowSeq = seq of the data-log row written next (links the streams).
+struct TofFrameRec { uint32_t seq, tMs, rowSeq; int32_t pos; uint8_t valid; uint16_t mm[3][64]; };
+constexpr uint32_t TOF_LOG_CAP = 6000;        // ~5 min at ~15-20 frame sets/s
+struct TofRing { TofFrameRec* rows; uint32_t cap; volatile uint32_t next; };
+void tofLogInit(TofRing& r, TofFrameRec* storage, uint32_t cap);
+void tofLogPush(TofRing& r, TofFrameRec f);
+uint32_t tofLogRead(const TofRing& r, uint32_t fromSeq, uint32_t max, TofFrameRec* out, uint32_t& oldest, uint32_t& nextOut);
+extern const char TOF_CSV_HEADER[];           // seq,t_ms,row_seq,pos,valid,s1_z00..s3_z63 (raw zone index)
+int tofCsvLine(const TofFrameRec& f, char* buf, int len);

@@ -23,7 +23,7 @@
 #include "log_core.h"
 
 // Shown in the dashboard header and /api/status: tells which build is running.
-static const char FW_BUILD[] = "phase3-edit " __DATE__ " " __TIME__;
+static const char FW_BUILD[] = "phase4-rec " __DATE__ " " __TIME__;
 static const char* resetReasonText() {
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON: return "power-on";
@@ -467,6 +467,42 @@ static void handleLogGet() {
   server.sendContent("");
 }
 
+// GET /api/log/tof?from=<seq>&max=<n<=60>: raw SEN0628 frames as CSV (same headers as /api/log).
+static void handleTofLogGet() {
+  const TofRing* ring = controlTofLog();
+  if (!ring) { sendError(503, "frame log not available (no PSRAM)"); return; }
+  long long from = 0, mx = 30;
+  if (server.hasArg("from") && !parseI(server.arg("from"), 0, 0xFFFFFFFFLL, from)) { sendError(400, "bad from"); return; }
+  if (server.hasArg("max") && !parseI(server.arg("max"), 1, 60, mx)) { sendError(400, "max must be 1..60"); return; }
+  static TofFrameRec frames[60];                 // web task only (~23 KB)
+  uint32_t oldest = 0, next = 0;
+  const uint32_t n = tofLogRead(*ring, (uint32_t)from, (uint32_t)mx, frames, oldest, next);
+  char h[16];
+  snprintf(h, sizeof h, "%lu", (unsigned long)next);   server.sendHeader("X-Log-Next", h);
+  snprintf(h, sizeof h, "%lu", (unsigned long)oldest); server.sendHeader("X-Log-Oldest", h);
+  snprintf(h, sizeof h, "%08lx", (unsigned long)gBootId); server.sendHeader("X-Log-Boot", h);
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/csv", "");
+  static char line[1600];
+  if (from == 0 || (server.hasArg("header") && server.arg("header") == "1")) {
+    server.sendContent(TOF_CSV_HEADER); server.sendContent("\n");
+  }
+  for (uint32_t i = 0; i < n; i++) { const int k = tofCsvLine(frames[i], line, sizeof line); server.sendContent(line, k); }
+  server.sendContent("");
+}
+
+// POST /api/log/mark?type=pull|twist|slide|other|end: operator marker in the data log.
+static void handleLogMark() {
+  static const char* const T[5] = {"pull", "twist", "slide", "other", "end"};
+  const String v = server.hasArg("type") ? server.arg("type") : String("");
+  ControlRequest r = blankReq(ControlRequest::LOG_MARK);
+  r.value = 0;
+  for (int i = 0; i < 5; i++) if (v == T[i]) r.value = (uint8_t)(MARK_PULL + i);
+  if (!r.value) { sendError(400, "type must be pull, twist, slide, other or end"); return; }
+  sendQueued(r);
+}
+
 // ---------------------------------------------------------------- sweep
 // GET /api/sweep: positions, fingertip opening and finger zones of the stored sweep (chunked).
 static void handleSweepGet() {
@@ -568,6 +604,8 @@ void webBegin() {
   server.on("/api/object/override", HTTP_POST, handleOverride);
   server.on("/api/sweep/opening", HTTP_POST, handleOpeningEdit);
   server.on("/api/log", HTTP_GET, handleLogGet);
+  server.on("/api/log/tof", HTTP_GET, handleTofLogGet);
+  server.on("/api/log/mark", HTTP_POST, handleLogMark);
   server.on("/api/object/delicate", HTTP_POST, [] { onOff(ControlRequest::SET_DELICATE); });
   server.on("/api/object/approachOnly", HTTP_POST, [] { onOff(ControlRequest::SET_APPROACH_ONLY); });
   server.on("/api/object/captureBackground", HTTP_POST, [] { simple(ControlRequest::CAPTURE_BACKGROUND); });

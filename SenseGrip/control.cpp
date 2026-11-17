@@ -23,7 +23,9 @@ static ControlStatus gStatus;
 static volatile bool gEstopReq = false;
 static GripConfig gCfgPub;
 static LogRing gLog = {nullptr, 0, 0};
+static TofRing gTofLog = {nullptr, 0, 0};
 const LogRing* controlLog() { return gLog.rows ? &gLog : nullptr; }
+const TofRing* controlTofLog() { return gTofLog.rows ? &gTofLog : nullptr; }
 
 static constexpr uint32_t JOG_DEADMAN_MS = 300;
 static constexpr uint32_t SERVO_FRESH_MS = 100;
@@ -94,7 +96,8 @@ struct Ctl {
   State lastState = State::IDLE;
   // Phase 4a log: events waiting for a row (one event per row)
   State logState = State::IDLE; FirstContact logFirst[3] = {FirstContact::NONE, FirstContact::NONE, FirstContact::NONE};
-  bool pendGrasp = false; uint8_t pendContact = 0;   // bit f: finger f's first contact not yet logged
+  LogEventFifo evq = {};                             // events waiting for a row (one per row)
+  uint32_t logTofOk[3] = {0, 0, 0};                  // last SEN0628 frame counters seen by the frame log
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -580,6 +583,9 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       return;
     }
     case ControlRequest::CAPTURE_BACKGROUND: captureBackground(c); return;
+    case ControlRequest::LOG_MARK:
+      logEventPush(c.evq, LogEvent::MARK, r.value, 0);   // no 'say': marks must not hide the last action
+      return;
     case ControlRequest::EDIT_OPENING: {
       if (c.sweeping) { say(c, false, "curve edit refused: sweep running"); return; }
       if (const char* err = openingEditSet(r.index, r.mm)) { say(c, false, "curve edit: %s", err); return; }
@@ -857,24 +863,37 @@ void logStep(Ctl& c, uint32_t now) {
   for (int s = 0; s < 3; s++) r.rad10[s] = toTenth(m.sensorRadiusMm[s], m.valid);
   r.cls = c.pr.plan.valid ? (uint8_t)c.pr.plan.cls : 255;
   r.shape = (uint8_t)m.shape;
-  // Events: one per row; STATE first, then grasp reached, then the first contact per finger.
+  // Events go through a FIFO, one per row, in the order they happened.
   if (st != c.logState) {
-    if (c.logState == State::GRASP && st == State::MONITOR) c.pendGrasp = true;
     if (st == State::START) for (auto& f : c.logFirst) f = FirstContact::NONE;
+    logEventPush(c.evq, LogEvent::STATE, (uint8_t)st, 0);
+    if (c.logState == State::GRASP && st == State::MONITOR) logEventPush(c.evq, LogEvent::GRASP_REACHED, 0, 0);
     c.logState = st;
-    r.ev = LogEvent::STATE; r.evArg = (uint8_t)st;
   }
   for (int f = 0; f < 3; f++)
-    if (c.logFirst[f] == FirstContact::NONE && c.first[f] != FirstContact::NONE) { c.logFirst[f] = c.first[f]; c.pendContact |= (uint8_t)(1u << f); }
-  if (r.ev == LogEvent::NONE && c.pendGrasp) { r.ev = LogEvent::GRASP_REACHED; c.pendGrasp = false; }
-  if (r.ev == LogEvent::NONE && c.pendContact)
-    for (int f = 0; f < 3; f++)
-      if (c.pendContact & (1u << f)) {
-        c.pendContact &= (uint8_t)~(1u << f);
-        r.ev = LogEvent::CONTACT; r.evArg = (uint8_t)(f + 1); r.evArg2 = (uint8_t)c.logFirst[f];
-        break;
-      }
+    if (c.logFirst[f] == FirstContact::NONE && c.first[f] != FirstContact::NONE) {
+      c.logFirst[f] = c.first[f];
+      logEventPush(c.evq, LogEvent::CONTACT, (uint8_t)(f + 1), (uint8_t)c.logFirst[f]);
+    }
+  logEventPop(c.evq, r.ev, r.evArg, r.evArg2);
   logPush(gLog, r);
+}
+
+// Raw SEN0628 frames (one record per new frame set), homed or not: the slip ToF feature is
+// chosen from these after the hardware recordings.
+void tofLogStep(Ctl& c, uint32_t now) {
+  if (!gTofLog.rows) return;
+  const TofSnapshot t = tofGet();
+  bool fresh = false;
+  for (int s = 0; s < 3; s++) if (t.s[s].ok != c.logTofOk[s]) { fresh = true; c.logTofOk[s] = t.s[s].ok; }
+  if (!fresh) return;
+  static TofFrameRec f;
+  f.tMs = now; f.rowSeq = gLog.next; f.pos = servoGet().fb.position; f.valid = 0;
+  for (int s = 0; s < 3; s++) {
+    memcpy(f.mm[s], t.s[s].mm, sizeof(f.mm[s]));
+    if (t.s[s].online) f.valid |= (uint8_t)(1u << s);
+  }
+  tofLogPush(gTofLog, f);
 }
 
 void publish(Ctl& c) {
@@ -954,6 +973,8 @@ void controlTask(void*) {
     uint32_t cap = LOG_CAP;
     if (!st) { cap = 3000; st = (LogRow*)malloc(sizeof(LogRow) * cap); }
     if (st) logInit(gLog, st, cap);
+    TofFrameRec* ft = (TofFrameRec*)ps_malloc(sizeof(TofFrameRec) * TOF_LOG_CAP);
+    if (ft) tofLogInit(gTofLog, ft, TOF_LOG_CAP);        // no internal-RAM fallback (390 B per frame)
   }
   // Mode/phase are read on the first iteration so Open is not refused for the first second.
   uint32_t lastServo = 0, lastFsr = 0, lastMode = 0;
@@ -1008,6 +1029,7 @@ void controlTask(void*) {
       if (dt > c->fsrUsMaxWin) c->fsrUsMaxWin = dt;
       logStep(*c, now);
     }
+    tofLogStep(*c, now);
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     homeUpdate(*c, now);
