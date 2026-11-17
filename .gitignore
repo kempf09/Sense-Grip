@@ -2,3 +2,5 @@ tests/run_tests
 .superpowers/
 tools/slip_replay/slip_replay
 tools/slip_replay/equiv_test
+data/
+out/
