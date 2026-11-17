@@ -243,6 +243,25 @@ keeps them in the browser (IndexedDB, survives a page reload):
 - Rows are only collected while the page is open; if it was closed for more than ~5 min during a
   grasp, the recording is marked **gap**. A gripper restart closes an open recording (gap).
 
+## Slip detection (phase 4b)
+
+While the gripper holds an object (MONITOR) a detector watches for slips. The fingers cannot
+move in MONITOR (torque off, not back-drivable), so any change is the object:
+- **Force:** a pad loses `Force drop fraction` (0.30) of its hold force within `Force window`
+  (300 ms). Slow relaxation of the pads is ignored.
+- **ToF:** `ToF zones changed` (4) SEN0628 zones that were near (< 350 mm) when the hold started
+  now read differently by more than max(12 mm, 10 %), on 2 frame sets in a row.
+- **Mode:** 0 force only, 1 ToF only, 2 either (default), 3 both within 0.5 s.
+
+A slip shows a red **SLIP** badge on the Combined tab and a `slip:fsr|tof|fsr+tof` event in the
+recording. **Tighten on slip** (SEN0628 tab, default **off**) re-closes to 1.25 × the target
+force (at most 0.9 × Max force), at most twice per grasp, never for Delicate; a failed tighten
+returns to MONITOR (not FAULT). The **Tighten** button does the same by hand.
+
+All thresholds are placeholders until tuned from recordings: see `docs/RECORDING_PROTOCOL.md`
+(how to record) and `tools/analysis/README.md` (how the recordings are turned into thresholds).
+`tools/slip_replay` replays a recording through the same detector code as the firmware.
+
 ## Why won't it arm?
 
 The dashboard lists every blocker. Arm is refused while any is present.
@@ -282,6 +301,9 @@ All under the dashboard host. POST unless noted.
 | `/api/servo/home` | Home: close to fingertip touch, set the position frame, open |
 | `/api/servo/sweep` | Run the calibration sweep |
 | GET `/api/sweep` | Stored sweep: positions, fingertip opening (effective), `auto` (analysed), `edited`, finger zones |
+| GET `/api/log/tof?from=<seq>&max=<n>` | Raw SEN0628 frames as CSV (same headers) |
+| `/api/log/mark?type=pull\|twist\|slide\|other\|end` | Operator mark in the recording |
+| `/api/fsm/tighten` | Tighten once (MONITOR only) |
 | GET `/api/log?from=<seq>&max=<n>` | Logged rows as CSV (headers `X-Log-Next`, `X-Log-Oldest`, `X-Log-Boot`) |
 | `/api/sweep/opening?i=N&mm=X` | Edit curve point N (no `mm`: undo that point; `i=-1`: clear all edits) |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |
@@ -322,7 +344,8 @@ Filter settings are `/api/config` fields `fsrFilter` (0 none, 1 moving average, 
 - `object_core.*` object points, width, class, shape, 300 ms smoothing (pure)
 - `plan_core.*` grasp plan: class, profile, pre-touch goal (pure)
 - `contact_core.*` contact pattern wrap / pinch (pure)
-- `log_core.*` 100 Hz data log ring and CSV rows (pure)
+- `log_core.*` 100 Hz data log ring, raw frame ring, event FIFO and CSV rows (pure)
+- `slip_core.*` slip detector (pure; also built into `tools/slip_replay`)
 - `sweep_store.*` sweep file (LittleFS) and SEN0628 calibration (NVS `senCal2`)
 - `fsr.*` FSR ADC reading (100 Hz), filtering and calibration storage
 - `tof_detect.*` object-present detection (pure)

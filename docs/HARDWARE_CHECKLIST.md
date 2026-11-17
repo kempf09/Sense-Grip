@@ -82,3 +82,14 @@ Run once on real hardware. Gripper unloaded, hand on the E-stop.
 33. **Reload mid-grasp:** reload the page during a grasp: the same recording continues (no gap).
 34. **CSV:** download it and open it in Excel / Python: `#` lines, one header, numeric columns;
     the `event` column shows `state:...`, `contact:F<n>:...` and `grasp_reached`.
+
+### Phase 4 — marks, frames, slip
+
+35. **Marks:** during a grasp press P, T, S, O, E: toast "Mark: ..." each time; the CSV `event`
+    column has `mark:pull` … `mark:end`; the recording lists the number of marks.
+36. **Frames file:** each recording downloads a `_tof.csv` with ~10–20 frames per second.
+37. **Slip warning (tighten off):** hold an object, pull it out: SLIP badge + `slip:` event, the
+    fingers do **not** move.
+38. **Tighten:** tick Tighten on slip, hold the mug, pull gently: `tighten:1`, the grasp closes
+    to a higher force and returns to MONITOR (`tighten_done`); at most twice; never with
+    Delicate. Untick it after the test.

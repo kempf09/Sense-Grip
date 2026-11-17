@@ -16,6 +16,9 @@ files, so what is not recorded cannot be tuned.
 4. FSR tab: **Max force N ≥ 8** (otherwise large grasps are refused).
 5. SEN0628 tab: with the gripper empty and nothing in view, press **Capture background**.
 6. Check the Recordings panel shows **≈100 rows/s**.
+7. SEN0628 tab → Slip detection: leave **Tighten on slip unticked**. The detector still runs
+   with placeholder thresholds and may show SLIP badges; ignore them (they are logged and help
+   the tuning). Do not change the slip settings during the session.
 
 ## 1. Mark keys (dashboard, Combined tab — work anywhere on the page)
 
