@@ -392,9 +392,9 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
                 [[m, param_summary(ev.params[k]), fmt(ev.agg(ev.params[k], idx_all)["det_rate"], pct=True),
                   fmt(ev.agg(ev.params[k], idx_all)["fa_per_min"]), fmt(ev.agg(ev.params[k], idx_all)["dist_rate"], pct=True),
                   ev.agg(ev.params[k], idx_all)["post_slip_fa"]] for m, k in best_def.items()]), "",
-          "`FA ≤10 s after a slip` counts quiet false alarms shortly after a slip episode: the ToF baseline is only "
-          "taken on MONITOR entry (spec §4), so an object left displaced after a slip keeps the ToF feature flagged "
-          "and re-fires every holdoff.", ""]
+          "`FA ≤10 s after a slip` counts quiet false alarms shortly after a slip episode. The detector takes a new "
+          "baseline when the holdoff after an event ends, so an object resting in a new place should not re-fire; "
+          "what remains here is motion after that re-baseline (the object settling back, being let go late).", ""]
     # per recording
     sc_best = ev.scores(best, idx_all)
     L += ["## Recordings", "", "Plots: one PNG per recording and one overview per object (run `plot_recording.py`).",
@@ -417,7 +417,7 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
                  "events", "notes"], rr), ""]
     if no_mon:
         L += ["### Forced active (recordings without MONITOR)", "",
-              "Replayed with `--force-active` (detector on every row) and the chosen parameters. Not part of the "
+              "Replayed with `--force-active` (detector active from the first row where a pad force ≥ fsrMinForceN) and the chosen parameters. Not part of the "
               "tuning metrics: the detector never runs outside MONITOR on the gripper, and in a manual recording the "
               "fingers may move (jogging), which the ToF feature does not expect.", ""]
         fr = []

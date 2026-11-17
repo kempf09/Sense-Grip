@@ -40,8 +40,8 @@ OBJECTS = [
     ("drill", "large", "elongated", True, [0, 1, 2, 3, 4, 5], (0.8, 2.2), 70, (45, 140)),
     ("asym", "medium", "irregular", False, [0, 2, 3, 5], (0.4, 1.5), 50, (70, 60)),
 ]
-CLASS_PROFILE = {"small": (25, 1.2, 200, 300), "medium": (30, 2.0, 300, 300), "large": (35, 3.0, 450, 250),
-                 "delicate": (25, 0.4, 120, 150)}
+CLASS_PROFILE = {"small": (10, 1.0, 200, 5), "medium": (10, 2.0, 260, 5), "large": (10, 4.0, 350, 5),
+                 "delicate": (15, 0.4, 150, 3)}     # firmware defaults (config_core.cpp): stand-off, N, current, speed
 
 
 def ramp(t, t0, dur):
@@ -327,13 +327,13 @@ def make_recording(rng, obj, trial, rep, num, t_start, seq0, opts):
     prof = CLASS_PROFILE[cls]
     started = (dt.datetime(2026, 11, 18, 9, 0, 0) + dt.timedelta(milliseconds=int(t_start))).isoformat(timespec="milliseconds") + "Z"
     head = [f"# SenseGrip recording {nm}", "# firmware: synthetic (make_synthetic.py) phase4-rec",
-            f"# started: {started} | rows: {int(keep_rows.sum())} | result: {'manual stop' if manual else 'IDLE'}"
+            f"# started: {started} | rows: {int(keep_rows.sum())} | result: {'manual stop' if manual else 'grasped'}"
             + (" | GAP: rows missing" if opts.get("gap") else "")]
     if not manual:
         head.append(f"# class profile {cls}: stand-off {prof[0]} mm, target {prof[1]} N, max current {prof[2]} "
                     f"x6.5 mA, grasp speed {prof[3]}")
     head.append("# slip: " + ",".join(f"slip{k[0].upper()}{k[1:]}={float(v):g}" for k, v in replay_py.DEFAULTS.items()))
-    head += ["# FSR filter: EMA window 5 alpha 0.3 | contact force 0.1 N | max force 8 N",
+    head += ["# FSR filter: EMA window 5 alpha 0.3 | contact force 0.25 N | max force 8 N",
              "# units: forces N (f=filtered, r=raw, FSR1..6), pos servo counts, current mA, load %, sizes mm"]
     main = "\n".join(head + [",".join(sgdata.MAIN_HEADER)] + lines) + "\n"
     tof_lines = [f"# SenseGrip raw SEN0628 frames for {nm} | mm per zone, raw zone index (row-major as read), 0 or "

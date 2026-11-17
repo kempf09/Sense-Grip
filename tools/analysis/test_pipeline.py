@@ -241,10 +241,18 @@ def test_cpp_agrees():
                                text=True, check=True).stdout
             assert a.returncode == 0, a.stderr
             assert a.stdout == b, f"hand-built {f} {extra}: outputs differ"
+    # re-baseline after an event: the object stays moved -> one event, not one per holdoff
+    o = replay_py.run(sgdata.load_recording(os.path.join(hb, "grasp_2_medium_20261118-100100.csv")).arrays(),
+                      {"mode": 1, "tofConfirmMs": 0, "holdoffMs": 300})
+    assert o["slip"].sum() == 1, o["slip"].sum()
     # forced active on the manual synthetic recording
     man = [r for r in recs if r.kind == "manual"][0]
     c, p = cpp.run(man, {}, force_active=True), se.Replay("python").run(man, {}, force_active=True)
     assert np.array_equal(c["slip"], p["slip"]) and np.array_equal(c["active"], p["active"]) and c["active"][-1]
+    touch = np.nonzero((man.arrays()["force"] >= 0.15).any(axis=1))[0][0]
+    first = np.nonzero(c["active"])[0][0]
+    t_ = man.arrays()["t"]
+    assert first > touch and t_[first] - t_[touch] >= 500 and t_[first - 1] - t_[touch] < 500
     # byte-identical full output with the defaults (C++ tool vs stand-in CLI)
     for r in recs[:5]:
         args = ["--rows", r.path] + (["--tof", r.tof_path] if r.tof_path else [])

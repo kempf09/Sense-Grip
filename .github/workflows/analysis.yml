@@ -1,0 +1,16 @@
+name: analysis
+on: [push, pull_request]
+jobs:
+  slip-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r tools/requirements.txt
+      - run: make -C tools/slip_replay
+      - run: python3 tools/analysis/test_pipeline.py
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          MPLBACKEND: Agg

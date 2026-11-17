@@ -15,6 +15,7 @@ config patch for the firmware.
 ```bash
 pip install -r tools/requirements.txt         # numpy, pandas, matplotlib (python >= 3.10)
 make -C tools/slip_replay                     # the C++ replay tool (same slip_core.cpp as the firmware)
+# CI: .github/workflows/analysis.yml runs the two lines above + the tests on every push
 python3 tools/analysis/test_pipeline.py       # ~1 min; must end with ALL TESTS PASSED
 ```
 
@@ -82,11 +83,14 @@ any program with the same contract (e.g. `"python3 tools/analysis/replay_py.py"`
 * **Quiet false alarms**: events while the detector is armed (MONITOR after settle) outside every
   episode window, per minute of such quiet time.
 * **Not scorable**: a mark outside MONITOR. Recordings with no MONITOR at all (manual recordings,
-  jogged in IDLE) are *not replayable*: listed, plotted, never counted as misses.
-* **FA ≤10 s after a slip**: quiet false alarms shortly after a slip episode. The ToF baseline is
-  taken once per MONITOR entry (spec §4), so an object left displaced after a slip keeps the ToF
-  feature flagged and re-fires every `holdoffMs`. If this column is large for ToF modes, that is a
-  detector design question (re-baseline after an event?), not a threshold question.
+  jogged in IDLE) are *not replayable*: listed, plotted, never counted as misses. The report also replays
+  them with `--force-active` (detector active from the first row where a pad force ≥ `fsrMinForceN`,
+  whatever the state) in a separate *Forced active* table that is not part of the tuning metrics.
+* **FA ≤10 s after a slip**: quiet false alarms shortly after a slip episode. The detector re-baselines
+  when the holdoff after an event ends (forces, frame, object measurement), so an object resting in its
+  new place does not re-fire; what remains is motion after the re-baseline (object settling back, the
+  operator letting go late after `E`). A large number here says `holdoffMs` (the re-baseline delay) is
+  shorter than the typical end of a slip.
 * **Leave-one-object-out**: parameters chosen on all other objects (with their own shortlist), then
   evaluated on the held-out object. A wide spread means the thresholds do not transfer between
   objects; the spec requires object-independent thresholds, so this is the number to watch.
@@ -120,6 +124,7 @@ The lines are GripConfig field names, so either
   ```bash
   curl -X POST "http://<gripper-ip>/api/config" --data "$(grep -v '^#' OUT/config_patch.txt | paste -sd'&' -)"
   ```
+  (written from `handleConfigPost` in `SenseGrip/web.cpp`, not yet tried on the gripper.)
 
 Then reload the dashboard and check the SEN0628 tab shows the new values. New recordings carry the
 settings in their `# slip:` comment line, and the report compares them.
