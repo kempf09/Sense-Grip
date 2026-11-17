@@ -68,6 +68,9 @@ Outputs `out/rec_<date>/report.md`, `best_params.json`, `config_patch.txt`,
 
 ## 5. Phase 3 checks from the same recordings
 
+```bash
+python3 tools/grasp_summary.py data/rec_<date> data/rec_<date>/notes.csv > out/rec_<date>/grasp_summary.md
+```
 The grasp recordings also show whether phase 3 worked on the gripper: per recording, the
 `state:` events (START → PRE_TOUCH → GRASP → MONITOR), `step` (approach → slow), the class, the
 force at `grasp_reached`, FAULT reasons. Summarise per object for the operator (which grasps
