@@ -100,7 +100,8 @@ struct Ctl {
   LogEventFifo evq = {};                             // events waiting for a row (one per row)
   uint32_t logTofOk[3] = {0, 0, 0};                  // last SEN0628 frame counters seen by the frame log
   // Phase 4b slip detection
-  SlipState slip = {}; SlipOut slipOut = {}; uint32_t slipTofOk[3] = {0, 0, 0};
+  SlipState slip = {}; SlipOut slipOut = {};
+  uint16_t slipFrame[3][64] = {}; uint8_t slipFrameValid = 0; bool slipFrameNew = false, slipHaveFrame = false;
   bool slipPending = false; uint8_t slipCount = 0, lastSlipReason = 0; uint32_t lastSlipMs = 0;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
@@ -895,14 +896,11 @@ void slipUpdate(Ctl& c, uint32_t now) {
   in.active = st == State::MONITOR;
   const FsrSnapshot fs = fsrGet();
   for (int i = 0; i < 6; i++) in.force[i] = (c.cfg.fsrEnabled & (1u << i)) ? fs.force[i] : NAN;
-  const TofSnapshot t = tofGet();
-  static uint16_t frame[3][64];
-  for (int s = 0; s < 3; s++) {
-    if (t.s[s].ok != c.slipTofOk[s]) { in.frameNew = true; c.slipTofOk[s] = t.s[s].ok; }
-    memcpy(frame[s], t.s[s].mm, sizeof(frame[s]));
-    if (t.s[s].online) in.frameValid |= (uint8_t)(1u << s);
-  }
-  in.frame = frame;
+  // Frames exactly as logged (tofLogStep runs before the row is written), so the replay tool
+  // gives a frame to the same row the firmware did.
+  in.frameNew = c.slipFrameNew; c.slipFrameNew = false;
+  in.frame = c.slipHaveFrame ? c.slipFrame : nullptr;
+  in.frameValid = c.slipFrameValid;
   const ObjectMeasure m = smoothed(c.sm, now);
   in.objValid = m.valid; in.rangeMm = m.rangeMm; in.heightMm = m.heightMm;
   for (int k = 0; k < 3; k++) in.rad[k] = m.sensorRadiusMm[k];
@@ -919,7 +917,6 @@ void slipUpdate(Ctl& c, uint32_t now) {
 // Raw SEN0628 frames (one record per new frame set), homed or not: the slip ToF feature is
 // chosen from these after the hardware recordings.
 void tofLogStep(Ctl& c, uint32_t now) {
-  if (!gTofLog.rows) return;
   const TofSnapshot t = tofGet();
   bool fresh = false;
   for (int s = 0; s < 3; s++) if (t.s[s].ok != c.logTofOk[s]) { fresh = true; c.logTofOk[s] = t.s[s].ok; }
@@ -930,7 +927,9 @@ void tofLogStep(Ctl& c, uint32_t now) {
     memcpy(f.mm[s], t.s[s].mm, sizeof(f.mm[s]));
     if (t.s[s].online) f.valid |= (uint8_t)(1u << s);
   }
-  tofLogPush(gTofLog, f);
+  if (gTofLog.rows) tofLogPush(gTofLog, f);           // the slip detector gets the frame even without the log
+  memcpy(c.slipFrame, f.mm, sizeof(c.slipFrame));
+  c.slipFrameValid = f.valid; c.slipFrameNew = true; c.slipHaveFrame = true;
 }
 
 void publish(Ctl& c) {
@@ -1062,6 +1061,7 @@ void controlTask(void*) {
     }
 
     if ((uint32_t)(now - lastServo) >= 10) { lastServo = now; if (servoPoll()) checkPositionJump(*c, now); }
+    tofLogStep(*c, now);                 // before the row: frames get row_seq = the row written next
     if ((uint32_t)(now - lastFsr) >= 10) {
       lastFsr = now;
       const uint32_t t0 = micros();
@@ -1071,7 +1071,6 @@ void controlTask(void*) {
       logStep(*c, now);
       slipUpdate(*c, now);
     }
-    tofLogStep(*c, now);
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
 
     homeUpdate(*c, now);
