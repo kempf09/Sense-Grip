@@ -95,12 +95,14 @@ MotorAction Fsm::run(const FsmInputs& in) {
       return NO_ACTION;
 
     case State::GRASP:
-      if (graspReached(in)) return enter(State::MONITOR, "grasp force reached");
-      if (pastCloseLimit(in.position)) return enter(State::FAULT, "target force not reached before close limit");
-      if (timedOut(in, cfg_.graspTimeoutMs)) return enter(State::FAULT, "GRASP timeout");
+      if (graspReached(in)) return tightening_ ? tightenEnd(true, "tighten done: higher force reached") : enter(State::MONITOR, "grasp force reached");
+      if (pastCloseLimit(in.position))
+        return tightening_ ? tightenEnd(false, "tighten failed: close limit reached") : enter(State::FAULT, "target force not reached before close limit");
+      if (timedOut(in, cfg_.graspTimeoutMs)) return tightening_ ? tightenEnd(false, "tighten failed: timeout") : enter(State::FAULT, "GRASP timeout");
       return NO_ACTION;
 
     case State::MONITOR:
+      if (in.slipEvent && in.tightenEnabled) return tryTighten("slip");
       return NO_ACTION;                          // holds until the operator presses Open
 
     case State::OPEN: {
@@ -138,6 +140,7 @@ MotorAction Fsm::enter(State s, const char* why) {
       if (prev == State::OPEN) return act(MotorAction::HOLD, cfg_.openSpeed, 0, cfg_.openTorqueLimit);
       return NO_ACTION;                          // from START: never moved; from FAULT: torque stays off
     case State::START:
+      tightenCount_ = 0; tightening_ = false;
       planEverValid_ = false; haveCls_ = false; clsSinceMs_ = nowMs_; startFirst_ = true;
       return NO_ACTION;
     case State::PRE_TOUCH: {
@@ -192,6 +195,9 @@ MotorAction Fsm::handleCommand(const FsmInputs& in) {
     case Cmd::ARM:    onArm(); return NO_ACTION;
     case Cmd::OPEN:   return onOpen(in);
     case Cmd::RESET:  return onReset(in);
+    case Cmd::TIGHTEN:
+      if (state_ != State::MONITOR) { setReason("Tighten ignored: not in MONITOR"); return NO_ACTION; }
+      return tryTighten("manual");
   }
   return NO_ACTION;
 }
@@ -259,6 +265,28 @@ const char* Fsm::safetyTrip(const FsmInputs& in) {
   }
   if (outsideTravel(in.position)) return "position outside travel limits";
   return nullptr;
+}
+
+// Tighten (phase 4b): re-close at a higher target. Never for the delicate class, at most
+// TIGHTEN_MAX per grasp, never above TIGHTEN_CAP x Max force. why: "slip" or "manual".
+MotorAction Fsm::tryTighten(const char* why) {
+  if (plan_.cls == ObjClass::DELICATE) { setReason("Tighten refused (%s): delicate object", why); return NO_ACTION; }
+  if (tightenCount_ >= TIGHTEN_MAX) { setReason("Tighten refused (%s): already tightened %u times", why, (unsigned)TIGHTEN_MAX); return NO_ACTION; }
+  const float prev = plan_.prof.forceN, cap = TIGHTEN_CAP * cfg_.maxForceN;
+  float next = prev * TIGHTEN_GAIN;
+  if (next > cap) next = cap;
+  if (!(next > prev + 0.01f)) { setReason("Tighten refused (%s): target %.2f N already at the cap (%.2f N)", why, (double)prev, (double)cap); return NO_ACTION; }
+  plan_.prof.forceN = next;
+  tightenCount_++; tightening_ = true; tevent_ = TightenEvent::STARTED;
+  std::snprintf(scratch_, sizeof scratch_, "%s: tightening %u/%u to %.2f N", why, (unsigned)tightenCount_, (unsigned)TIGHTEN_MAX, (double)next);
+  return enter(State::GRASP, scratch_);
+}
+
+// Tighten finished: back to MONITOR either way (a failed tighten is not a FAULT; the object is still held).
+MotorAction Fsm::tightenEnd(bool ok, const char* why) {
+  tightening_ = false;
+  tevent_ = ok ? TightenEvent::DONE : TightenEvent::FAILED;
+  return enter(State::MONITOR, why);
 }
 
 // START: wait until the plan has been valid with one class for START_STABLE_MS, then latch it.

@@ -15,7 +15,12 @@
 enum class State : uint8_t { IDLE, START, PRE_TOUCH, GRASP, MONITOR, OPEN, FAULT };
 const char* stateName(State s);
 
-enum class Cmd : uint8_t { NONE, ARM, DISARM, OPEN, ESTOP, RESET };
+enum class Cmd : uint8_t { NONE, ARM, DISARM, OPEN, ESTOP, RESET, TIGHTEN };
+// Phase 4b tighten: MONITOR -> GRASP at a higher target, back to MONITOR when reached or failed.
+enum class TightenEvent : uint8_t { NONE, STARTED, DONE, FAILED };
+constexpr uint8_t TIGHTEN_MAX = 2;            // per grasp
+constexpr float TIGHTEN_GAIN = 1.25f;         // new target = previous x gain ...
+constexpr float TIGHTEN_CAP = 0.9f;           // ... but at most this fraction of Max force
 
 // What to grasp and how (built by plan_core from the SEN0628 measurement, the class profile and
 // the operator's override / delicate switches). Latched when START hands over to PRE_TOUCH.
@@ -46,6 +51,8 @@ struct FsmInputs {
   bool objectPresent;     // already debounced upstream (presence hold)
   GraspPlan plan; const char* planWhy;   // planWhy: reason when !plan.valid (may be null)
   bool approachOnly;      // test switch: stop in MONITOR at the pre-touch position
+  bool slipEvent;         // slip detector fired on this step (phase 4b)
+  bool tightenEnabled;    // config: tighten on slip
 };
 
 struct MotorAction {
@@ -80,6 +87,9 @@ public:
   void invalidateOpened() { openedSinceBoot_ = false; }
   PreTouchStep preTouchStep() const { return preStep_; }
   const GraspPlan& plan() const { return plan_; }      // latched at START -> PRE_TOUCH
+  uint8_t tightenCount() const { return tightenCount_; }
+  bool tightening() const { return tightening_; }
+  TightenEvent takeTightenEvent() { const TightenEvent e = tevent_; tevent_ = TightenEvent::NONE; return e; }
 
   static constexpr uint8_t MAX_BLOCKERS = 20;
   static constexpr uint8_t MAX_REPORTED = MAX_BLOCKERS + 1;   // + "not armed"
@@ -93,6 +103,8 @@ private:
   MotorAction onReset(const FsmInputs& in);
   MotorAction onDisarm();
   MotorAction startUpdate(const FsmInputs& in);
+  MotorAction tryTighten(const char* why);
+  MotorAction tightenEnd(bool ok, const char* why);
   void onArm();
   void computeBlockers(const FsmInputs& in);
   void addBlocker(uint8_t id, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
@@ -118,6 +130,7 @@ private:
   bool planEverValid_ = false; bool haveCls_ = false; bool startFirst_ = false; ObjClass stableCls_ = ObjClass::SMALL; uint32_t clsSinceMs_ = 0;
   int32_t lastPos_ = 0; int32_t progPos_ = 0; uint32_t progMs_ = 0;
   bool approachOnly_ = false;
+  bool tightening_ = false; uint8_t tightenCount_ = 0; TightenEvent tevent_ = TightenEvent::NONE;
   bool stopPending_ = false;               // STOP queued by motorFailed()
   uint32_t stopDueMs_ = 0;                 // ... not before this time
   char reason_[96];

@@ -23,7 +23,7 @@
 #include "log_core.h"
 
 // Shown in the dashboard header and /api/status: tells which build is running.
-static const char FW_BUILD[] = "phase4-rec " __DATE__ " " __TIME__;
+static const char FW_BUILD[] = "phase4-slip " __DATE__ " " __TIME__;
 static const char* resetReasonText() {
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON: return "power-on";
@@ -65,7 +65,7 @@ struct Out {
 };
 
 static char statusBuf[12288];            // only the web task touches these (status incl. up to 21 blockers)
-static char smallBuf[3072];   // config JSON incl. the v7 class profiles (~1.6 kB)
+static char smallBuf[4096];   // config JSON incl. class profiles and slip settings (~2.8 kB)
 
 static void sendJson(int code, const char* body) {
   server.sendHeader("Cache-Control", "no-store");
@@ -237,6 +237,13 @@ static void handleStatus() {
     for (int f = 0; f < 3; f++) { if (f) o.put(","); o.str(FC[cs.firstContact[f] & 3]); }
     o.put("],\"pattern\":"); o.str(patternName((Pattern)cs.pattern));
     o.put(",\"patternOk\":"); o.boolean(cs.patternOk);
+    o.put("},\"slip\":{\"armed\":"); o.boolean(cs.slipArmed);
+    o.put(",\"fsrDrop\":"); o.flt(cs.slipFsrDrop);
+    o.put(",\"tofZones\":%d,\"tofDisp\":", (int)cs.slipTofZones); o.flt(cs.slipTofDisp);
+    o.put(",\"count\":%u,\"agoMs\":%lu,\"reason\":", (unsigned)cs.slipCount, (unsigned long)cs.slipAgoMs);
+    o.str(cs.slipReason == 3 ? "fsr+tof" : cs.slipReason == 1 ? "fsr" : cs.slipReason == 2 ? "tof" : "");
+    o.put(",\"tightenCount\":%u,\"tightening\":", (unsigned)cs.tightenCount); o.boolean(cs.tightening);
+    o.put(",\"tightenOn\":"); o.boolean(cs.slipTighten);
   }
   o.put("},\"diag\":{\"loopMaxUs\":%lu,\"posJumps\":%lu,\"servoBusErrors\":%lu,\"fsrSampleUsMax\":%lu",
         (unsigned long)cs.loopMaxUs, (unsigned long)cs.posJumps, (unsigned long)sv.busErrors,
@@ -304,6 +311,10 @@ static const Field FIELDS[] = {
   F_(largeStandoffMm, T_F), F_(largeForceN, T_F), F_(largeMaxCurrent, T_U16), F_(largeGraspSpeed, T_U16),
   F_(delicateStandoffMm, T_F), F_(delicateForceN, T_F), F_(delicateMaxCurrent, T_U16), F_(delicateGraspSpeed, T_U16),
   F_(sweepStepCounts, T_U16), F_(sweepSpeed, T_U16), F_(sweepCurrent, T_U16),
+  F_(slipFsrDropFrac, T_F), F_(slipFsrWindowMs, T_U16), F_(slipFsrMinForceN, T_F), F_(slipFsrConfirmMs, T_U16),
+  F_(slipTofNearMm, T_U16), F_(slipTofZoneMm, T_U16), F_(slipTofZoneFrac, T_F), F_(slipTofZoneCount, T_U8),
+  F_(slipTofConfirmFrames, T_U8), F_(slipTofDispMm, T_F), F_(slipMode, T_U8), F_(slipFuseWindowMs, T_U16),
+  F_(slipSettleMs, T_U16), F_(slipHoldoffMs, T_U16), F_(slipTighten, T_BOOL),
   { "tofMask0", T_MASK, offsetof(GripConfig, tofMask), 0 },
   { "tofMask1", T_MASK, offsetof(GripConfig, tofMask), 1 },
   { "tofMask2", T_MASK, offsetof(GripConfig, tofMask), 2 },
@@ -630,6 +641,7 @@ void webBegin() {
   server.on("/api/fsm/open", HTTP_POST, [] { fsmCmd(Cmd::OPEN); });
   server.on("/api/fsm/estop", HTTP_POST, handleEstop);
   server.on("/api/fsm/reset", HTTP_POST, [] { fsmCmd(Cmd::RESET); });
+  server.on("/api/fsm/tighten", HTTP_POST, [] { fsmCmd(Cmd::TIGHTEN); });
   server.onNotFound([] { sendError(404, "not found"); });
   server.begin();
 }

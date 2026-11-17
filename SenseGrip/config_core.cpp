@@ -24,6 +24,12 @@ GripConfig defaultConfig() {
   c.largeStandoffMm = 10;    c.largeForceN = 4.0f;    c.largeMaxCurrent = 350;    c.largeGraspSpeed = 5;
   c.delicateStandoffMm = 15; c.delicateForceN = 0.4f; c.delicateMaxCurrent = 150; c.delicateGraspSpeed = 3;
   c.sweepStepCounts = 100; c.sweepSpeed = 5; c.sweepCurrent = 0;
+  const SlipParams sp = slipDefaults();
+  c.slipFsrDropFrac = sp.fsrDropFrac; c.slipFsrWindowMs = sp.fsrWindowMs; c.slipFsrMinForceN = sp.fsrMinForceN;
+  c.slipFsrConfirmMs = sp.fsrConfirmMs; c.slipTofNearMm = sp.tofNearMm; c.slipTofZoneMm = sp.tofZoneMm;
+  c.slipTofZoneFrac = sp.tofZoneFrac; c.slipTofZoneCount = sp.tofZoneCount; c.slipTofConfirmFrames = sp.tofConfirmFrames;
+  c.slipTofDispMm = sp.tofDispMm; c.slipMode = sp.mode; c.slipFuseWindowMs = sp.fuseWindowMs;
+  c.slipSettleMs = sp.settleMs; c.slipHoldoffMs = sp.holdoffMs; c.slipTighten = false;
   return c;
 }
 
@@ -80,6 +86,20 @@ bool clampConfig(GripConfig& c) {
                    {&c.mediumStandoffMm, &c.mediumForceN, &c.mediumMaxCurrent, &c.mediumGraspSpeed, d.mediumStandoffMm, d.mediumForceN},
                    {&c.largeStandoffMm, &c.largeForceN, &c.largeMaxCurrent, &c.largeGraspSpeed, d.largeStandoffMm, d.largeForceN},
                    {&c.delicateStandoffMm, &c.delicateForceN, &c.delicateMaxCurrent, &c.delicateGraspSpeed, d.delicateStandoffMm, d.delicateForceN}};
+  ch |= clampF(c.slipFsrDropFrac, 0.05f, 0.95f, d.slipFsrDropFrac);
+  ch |= clampInt(c.slipFsrWindowMs, 50, 600);
+  ch |= clampF(c.slipFsrMinForceN, 0.0f, 10.0f, d.slipFsrMinForceN);
+  ch |= clampInt(c.slipFsrConfirmMs, 0, 500);
+  ch |= clampInt(c.slipTofNearMm, 50, 2000);
+  ch |= clampInt(c.slipTofZoneMm, 1, 500);
+  ch |= clampF(c.slipTofZoneFrac, 0.0f, 1.0f, d.slipTofZoneFrac);
+  ch |= clampInt(c.slipTofZoneCount, 1, 192);
+  ch |= clampInt(c.slipTofConfirmFrames, 1, 20);
+  ch |= clampF(c.slipTofDispMm, 0.0f, 200.0f, d.slipTofDispMm);
+  if (c.slipMode > 3) { c.slipMode = d.slipMode; ch = true; }
+  ch |= clampInt(c.slipFuseWindowMs, 0, 5000);
+  ch |= clampInt(c.slipSettleMs, 0, 5000);
+  ch |= clampInt(c.slipHoldoffMs, 0, 10000);
   ch |= clampInt(c.sweepStepCounts, 60, 500);
   ch |= clampInt(c.sweepSpeed, 1, 20);
   if (c.sweepCurrent != 0) ch |= clampInt(c.sweepCurrent, 50, 415);
@@ -123,6 +143,16 @@ const char* profileProblem(const GripConfig& c) {
     if (!(p.forceN < c.maxForceN)) return BELOW_MAX[k];
   }
   return nullptr;
+}
+
+SlipParams slipParamsOf(const GripConfig& c) {
+  SlipParams p;
+  p.fsrDropFrac = c.slipFsrDropFrac; p.fsrWindowMs = c.slipFsrWindowMs; p.fsrMinForceN = c.slipFsrMinForceN;
+  p.fsrConfirmMs = c.slipFsrConfirmMs; p.tofNearMm = c.slipTofNearMm; p.tofZoneMm = c.slipTofZoneMm;
+  p.tofZoneFrac = c.slipTofZoneFrac; p.tofZoneCount = c.slipTofZoneCount; p.tofConfirmFrames = c.slipTofConfirmFrames;
+  p.tofDispMm = c.slipTofDispMm; p.mode = c.slipMode; p.fuseWindowMs = c.slipFuseWindowMs;
+  p.settleMs = c.slipSettleMs; p.holdoffMs = c.slipHoldoffMs;
+  return p;
 }
 
 bool limitsRestorable(const GripConfig& c) {

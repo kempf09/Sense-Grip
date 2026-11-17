@@ -2,6 +2,7 @@
 #pragma once
 #include <stdint.h>
 #include "fsr_filter.h"
+#include "slip_core.h"
 
 // Servo speed unit: 0.732 RPM (Waveshare CF library: "V=60*0.732=43.92rpm"); 61 ~ 44.7 RPM max.
 constexpr uint16_t SPEED_MAX = 61;
@@ -40,7 +41,13 @@ struct GripConfig {
   // v8: calibration sweep settings. step counts per sample (60..500), speed (1..20), max current
   // (0 = use closeTorqueLimit, else 50..415).
   uint16_t sweepStepCounts, sweepSpeed, sweepCurrent;
+  // v9: slip detection (phase 4b) = SlipParams by name with a "slip" prefix, and the tighten switch.
+  float slipFsrDropFrac; uint16_t slipFsrWindowMs; float slipFsrMinForceN; uint16_t slipFsrConfirmMs;
+  uint16_t slipTofNearMm, slipTofZoneMm; float slipTofZoneFrac; uint8_t slipTofZoneCount, slipTofConfirmFrames;
+  float slipTofDispMm; uint8_t slipMode; uint16_t slipFuseWindowMs, slipSettleMs, slipHoldoffMs;
+  bool slipTighten;                                     // re-close on slip (default off)
 };
+SlipParams slipParamsOf(const GripConfig& c);
 
 enum class ObjClass : uint8_t { SMALL = 0, MEDIUM = 1, LARGE = 2, DELICATE = 3 };
 struct ClassProfile { float standoffMm, forceN; uint16_t maxCurrent, graspSpeed; };
@@ -68,6 +75,10 @@ constexpr unsigned GRIP_CONFIG_V6_BLOB_SIZE =
 constexpr unsigned GRIP_CONFIG_V7_SIZE = __builtin_offsetof(GripConfig, sweepStepCounts);
 constexpr unsigned GRIP_CONFIG_V7_BLOB_SIZE =
     (GRIP_CONFIG_V7_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
+// Version 8 held the fields before slipFsrDropFrac; its stored blob was padded to the struct alignment.
+constexpr unsigned GRIP_CONFIG_V8_SIZE = __builtin_offsetof(GripConfig, slipFsrDropFrac);
+constexpr unsigned GRIP_CONFIG_V8_BLOB_SIZE =
+    (GRIP_CONFIG_V8_SIZE + alignof(GripConfig) - 1) / alignof(GripConfig) * alignof(GripConfig);
 // The FSR filter settings as FilterParams.
 FilterParams filterParamsOf(const GripConfig& c);
 // Clamps every field into range; returns true if anything changed.

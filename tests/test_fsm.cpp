@@ -872,3 +872,111 @@ TEST(fsm_open_moving_is_not_settled) {
   for (uint32_t t = 0; t <= 1000; t += 100) { in.nowMs = t; in.position = 2100 - (int32_t)t / 10; f.step(in); }
   CHECK(f.state() == State::OPEN);                       // still creeping in: keep waiting
 }
+
+// ---- phase 4b: slip -> tighten ----
+static Fsm monitorFsm(uint32_t t0, ClassProfile prof = ClassProfile{10, 1.0f, 200, 10}, ObjClass cls = ObjClass::MEDIUM) {
+  Fsm f = startFsm(t0);
+  FsmInputs in = ready(t0); in.objectPresent = true;
+  in.plan = GraspPlan{true, cls, false, 0, prof};
+  f.step(in);
+  in.nowMs = t0 + START_STABLE_MS; f.step(in);            // PRE_TOUCH (slow)
+  in.nowMs += 10; in.anyFingerContact = true; in.position = 8000; f.step(in);   // GRASP
+  in.avgContactForce = prof.forceN + 0.1f; in.channelsInContact = 2;
+  for (uint32_t s = 1; s <= 3; s++) { in.fsrSeq = 500 + s; in.nowMs += 10; f.step(in); }
+  CHECK(f.state() == State::MONITOR);
+  return f;
+}
+static FsmInputs held(uint32_t t) {
+  FsmInputs in = ready(t); in.objectPresent = true; in.anyFingerContact = true; in.position = 8000;
+  in.avgContactForce = 1.1f; in.channelsInContact = 2; in.fsrSeq = 600;
+  return in;
+}
+TEST(fsm_slip_without_tighten_switch_never_moves) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = false;
+  for (int k = 0; k < 50; k++, in.nowMs += 10) CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(f.state() == State::MONITOR);
+  CHECK(f.takeTightenEvent() == TightenEvent::NONE);
+}
+TEST(fsm_slip_tighten_regrasps_with_higher_force) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true;
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::GRASP);
+  CHECK(a.kind == MotorAction::RUN); CHECK_EQ(a.speed, 10); CHECK_EQ(a.torque, 200);
+  CHECK_NEAR(f.plan().prof.forceN, 1.25f, 1e-5);
+  CHECK(f.takeTightenEvent() == TightenEvent::STARTED); CHECK_EQ((int)f.tightenCount(), 1);
+  CHECK(f.takeTightenEvent() == TightenEvent::NONE);
+  in.slipEvent = false; in.avgContactForce = 1.3f;
+  for (uint32_t s = 1; s <= 3; s++) { in.fsrSeq = 700 + s; in.nowMs += 10; f.step(in); }
+  CHECK(f.state() == State::MONITOR);
+  CHECK(f.takeTightenEvent() == TightenEvent::DONE);
+}
+TEST(fsm_tighten_failure_returns_to_monitor_not_fault) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true;
+  f.step(in); CHECK(f.state() == State::GRASP); f.takeTightenEvent();
+  in.slipEvent = false; in.position = 19200;                 // close limit before the higher force
+  MotorAction a = f.step(in);
+  CHECK(f.state() == State::MONITOR);
+  CHECK(a.kind == MotorAction::HOLD);
+  CHECK(f.takeTightenEvent() == TightenEvent::FAILED);
+  CHECK(std::strstr(f.reason(), "tighten failed") != nullptr);
+  // timeout during tighten also returns to MONITOR
+  in.position = 8000; in.slipEvent = true; f.step(in); CHECK(f.state() == State::GRASP); f.takeTightenEvent();
+  in.slipEvent = false; in.nowMs += cfg().graspTimeoutMs; f.step(in);
+  CHECK(f.state() == State::MONITOR);
+  CHECK(f.takeTightenEvent() == TightenEvent::FAILED);
+}
+TEST(fsm_tighten_at_most_twice_per_grasp) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.tightenEnabled = true;
+  for (int n = 0; n < 3; n++) {
+    in.slipEvent = true; f.step(in); in.slipEvent = false;
+    if (f.state() == State::GRASP) {
+      in.avgContactForce = 10;                               // reached at once
+      for (uint32_t s = 1; s <= 3; s++) { in.fsrSeq += 1; in.nowMs += 10; f.step(in); }
+      in.avgContactForce = 1.1f;
+    }
+    in.nowMs += 100;
+  }
+  CHECK_EQ((int)f.tightenCount(), 2);
+  CHECK(f.state() == State::MONITOR);
+}
+TEST(fsm_tighten_never_delicate) {
+  Fsm f = monitorFsm(1000, ClassProfile{15, 0.4f, 150, 3}, ObjClass::DELICATE);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true; in.avgContactForce = 0.5f;
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(f.state() == State::MONITOR);
+  in.slipEvent = false; in.cmd = Cmd::TIGHTEN; f.step(in);   // manual too
+  CHECK(f.state() == State::MONITOR);
+  CHECK(std::strstr(f.reason(), "delicate") != nullptr);
+}
+TEST(fsm_tighten_force_capped_below_max_force) {
+  Fsm f = monitorFsm(1000, ClassProfile{10, 2.6f, 200, 10});   // cfg(): maxForceN 3 -> cap 2.7
+  FsmInputs in = held(2000); in.avgContactForce = 2.7f; in.slipEvent = true; in.tightenEnabled = true;
+  f.step(in);
+  CHECK(f.state() == State::GRASP);
+  CHECK_NEAR(f.plan().prof.forceN, 2.7f, 1e-5);
+}
+TEST(fsm_manual_tighten_command) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.cmd = Cmd::TIGHTEN;            // switch off: manual still works
+  f.step(in);
+  CHECK(f.state() == State::GRASP);
+  in.cmd = Cmd::NONE;
+  Fsm g = openedFsm();
+  in = ready(10); in.cmd = Cmd::TIGHTEN; g.step(in);           // not in MONITOR: ignored
+  CHECK(g.state() == State::IDLE);
+}
+TEST(fsm_tighten_count_resets_for_next_grasp) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true; f.step(in);
+  CHECK_EQ((int)f.tightenCount(), 1);
+  in.slipEvent = false; in.cmd = Cmd::OPEN; f.step(in); in.cmd = Cmd::NONE;
+  in.position = 1968; f.step(in);
+  CHECK(f.state() == State::IDLE);
+  in.cmd = Cmd::ARM; f.step(in); in.cmd = Cmd::NONE; in.objectPresent = true; f.step(in);
+  CHECK(f.state() == State::START);
+  CHECK_EQ((int)f.tightenCount(), 0);
+}

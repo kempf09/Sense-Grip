@@ -34,6 +34,10 @@ struct ControlStatus {
   uint8_t preTouchStep;    // PreTouchStep (meaningful in PRE_TOUCH)
   uint8_t latchedCls;      // class latched for the current grasp (PRE_TOUCH..MONITOR)
   uint8_t firstContact[3]; uint8_t pattern; bool patternOk;
+  // Phase 4b slip detection
+  bool slipArmed; float slipFsrDrop; int16_t slipTofZones; float slipTofDisp;
+  uint8_t slipCount, slipReason; uint32_t slipAgoMs;
+  uint8_t tightenCount; bool tightening, slipTighten;
 };
 
 void controlBegin();                              // creates the request queue (8); call before tasks

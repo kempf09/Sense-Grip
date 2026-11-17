@@ -84,7 +84,9 @@ select{width:auto;min-width:150px;display:block}
   <div>
    <div class="panel"><h2>Finger force</h2><div id="fingers"></div>
     <h2 style="margin-top:12px">Position</h2><div class="bar"><i id="posBar"></i><span id="posTxt"></span></div></div>
-   <div class="panel"><h2>Object</h2><div id="cObj" class="small">-</div></div>
+   <div class="panel"><h2>Object</h2><div id="cObj" class="small">-</div>
+    <div id="cSlip" class="small" style="margin-top:6px">-</div>
+    <div class="btns" style="margin-top:6px"><button class="b" id="bTighten" disabled>Tighten</button></div></div>
    <div class="panel"><h2>ToF (SEN0628)</h2><div class="grid3" id="cHm"></div></div>
   </div>
  </div>
@@ -151,6 +153,9 @@ select{width:auto;min-width:150px;display:block}
    <span class="small">(not kept after restart)</span></div>
   <div class="cfg" id="objCfg" style="margin-top:8px"></div>
   <div class="btns"><button class="b pri" id="objSave">Save class settings</button><button class="b" id="objBg">Capture background</button></div>
+  <h2 style="margin-top:12px">Slip detection</h2>
+  <div class="cfg" id="slipCfg"></div><button class="b pri" id="slipSave">Save slip settings</button>
+  <p class="small">Runs while holding (MONITOR). FSR: a pad loses this fraction of its hold force within the window. ToF: this many zones (nearer than "near" at the start of the hold) change by more than max(mm, fraction). Mode 0 force only, 1 ToF only, 2 either, 3 both. Tighten on slip: re-close to 1.25 x the target force (max 0.9 x Max force), at most twice per grasp, never Delicate. Placeholder values until tuned from recordings.</p>
   <p class="small">Stand-off = x mm + 10 % of the object distance. Cyan outlines on the maps = object zones; magenta = finger zones.</p></div>
 </section>
 </main>
@@ -306,6 +311,9 @@ var FORMS={
  svCfg:[['approachSpeed','Approach speed (1-61, x0.732 RPM)'],['graspSpeed','Grasp speed (1-61, x0.732 RPM)'],['openSpeed','Open speed (1-61, x0.732 RPM)'],['closeTorqueLimit','Close max current (x6.5 mA)'],['openTorqueLimit','Open max current (x6.5 mA)'],['preTouchTimeoutMs','Pre-touch timeout ms'],['graspTimeoutMs','Grasp timeout ms'],['openTimeoutMs','Open timeout ms'],['openToleranceCounts','Open tolerance counts'],['limitSlackCounts','Limit slack counts'],['closePositive','Close = positive','b']],
  fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
  tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']],
+ slipCfg:[['slipTighten','Tighten on slip','b'],['slipMode','Mode (0 force, 1 ToF, 2 either, 3 both)'],['slipFsrDropFrac','Force drop fraction'],['slipFsrWindowMs','Force window ms'],['slipFsrMinForceN','Min pad force N'],['slipFsrConfirmMs','Force confirm ms'],
+  ['slipTofZoneCount','ToF zones changed'],['slipTofZoneMm','ToF zone change mm'],['slipTofZoneFrac','ToF zone change fraction'],['slipTofNearMm','ToF near mm'],['slipTofConfirmFrames','ToF confirm frames'],['slipTofDispMm','Object displacement mm (0 = off)'],
+  ['slipFuseWindowMs','Both: window ms'],['slipSettleMs','Settle after hold ms'],['slipHoldoffMs','Hold-off after slip ms']],
  swCfg:[['sweepStepCounts','Step counts per sample (60-500)'],['sweepSpeed','Sweep speed (1-20)'],['sweepCurrent','Sweep max current (x6.5 mA, 0 = Close max current)']],
  objCfg:[['smallMaxMm','Small below width mm'],['mediumMaxMm','Medium below width mm'],['contactSpeed','Slow-to-contact speed (1-61)'],
   ['smallStandoffMm','Small: stand-off mm'],['smallForceN','Small: target force N'],['smallMaxCurrent','Small: max current (x6.5 mA)'],['smallGraspSpeed','Small: grasp speed'],
@@ -350,6 +358,8 @@ function saveForm(id,extra){
 $('svSave').onclick=function(){saveForm('svCfg')};
 $('swSave').onclick=function(){saveForm('swCfg')};
 $('objSave').onclick=function(){saveForm('objCfg')};
+$('slipSave').onclick=function(){saveForm('slipCfg')};
+$('bTighten').onclick=function(){post('/api/fsm/tighten')};
 $('objOv').onchange=function(){post('/api/object/override?cls='+this.value)};
 $('objDel').onchange=function(){post('/api/object/delicate?on='+(this.checked?1:0))};
 $('objAppr').onchange=function(){post('/api/object/approachOnly?on='+(this.checked?1:0))};
@@ -371,6 +381,12 @@ function renderObject(){var O=S.object;if(!O)return;
       ' <span class="small">('+(O.first||[]).map(function(f,i){return FNAME[i]+': '+esc(f)}).join(', ')+')</span>'}
   var html=badges+'<div>'+meas+'</div><div>'+det+' &middot; '+eff+'</div>'+(ph?'<div>'+ph+'</div>':'')+(pat?'<div>'+pat+'</div>':'');
   $('cObj').innerHTML=html;$('objLive').innerHTML=html;
+  var L=S.slip||{},sh='';
+  if(L.count)sh+='<span class="pill on" style="background:#c0392b;color:#fff">SLIP x'+L.count+' ('+esc(L.reason)+') '+(L.agoMs/1000).toFixed(1)+' s ago</span> ';
+  if(L.tightening)sh+='<span class="pill on" style="background:#d68910;color:#fff">TIGHTENING</span> ';
+  sh+='<span class="small">detector '+(L.armed?'armed':'idle')+' &middot; force drop '+fx(L.fsrDrop,2)+' &middot; ToF zones '+(L.tofZones===undefined?'-':L.tofZones)+
+    ' &middot; tighten '+(L.tightenOn?'ON':'off')+' ('+(L.tightenCount||0)+'/2)</span>';
+  $('cSlip').innerHTML=sh;$('bTighten').disabled=S.state!=='MONITOR';
   var ov=$('objOv');if(document.activeElement!==ov)ov.value=O.override||'auto';
   $('objDel').checked=!!O.delicate;$('objAppr').checked=!!O.approachOnly;
 }

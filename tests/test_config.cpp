@@ -170,3 +170,27 @@ TEST(config_v7_size_constants) {
   CHECK_EQ((unsigned)GRIP_CONFIG_V7_SIZE, (unsigned)offsetof(GripConfig, sweepStepCounts));
   CHECK_EQ((unsigned)GRIP_CONFIG_V7_BLOB_SIZE, 168u);      // sizeof(GripConfig) of the v7 build (measured)
 }
+
+// ---- v9: slip detection settings ----
+#include "slip_core.h"
+TEST(config_v9_slip_defaults_match_detector) {
+  GripConfig c = defaultConfig();
+  const SlipParams d = slipDefaults(), p = slipParamsOf(c);
+  for (int i = 0; slipParamName(i); i++) CHECK_NEAR(slipParamGet(p, slipParamName(i)), slipParamGet(d, slipParamName(i)), 1e-6);
+  CHECK(!c.slipTighten);                                   // tighten on slip is off by default
+  CHECK(!clampConfig(c));
+}
+TEST(config_v9_slip_clamped) {
+  GripConfig c = defaultConfig();
+  c.slipFsrDropFrac = 5; c.slipFsrWindowMs = 5000; c.slipMode = 9; c.slipTofZoneCount = 0;
+  CHECK(clampConfig(c));
+  CHECK_NEAR(c.slipFsrDropFrac, 0.95f, 1e-6);
+  CHECK_EQ(c.slipFsrWindowMs, (uint16_t)600);
+  CHECK_EQ(c.slipMode, (uint8_t)2);
+  CHECK_EQ(c.slipTofZoneCount, (uint8_t)1);
+}
+TEST(config_v8_size_constants) {
+  CHECK_EQ((unsigned)GRIP_CONFIG_V8_SIZE, (unsigned)offsetof(GripConfig, slipFsrDropFrac));
+  CHECK_EQ((unsigned)GRIP_CONFIG_V8_BLOB_SIZE, 176u);       // sizeof(GripConfig) of the v8 build (measured)
+  CHECK(GRIP_CONFIG_V8_BLOB_SIZE >= GRIP_CONFIG_V8_SIZE);
+}

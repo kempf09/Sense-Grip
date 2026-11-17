@@ -16,6 +16,7 @@
 #include "plan_core.h"
 #include "contact_core.h"
 #include "log_core.h"
+#include "slip_core.h"
 #include <climits>
 
 static QueueHandle_t gQueue = nullptr;
@@ -98,6 +99,9 @@ struct Ctl {
   State logState = State::IDLE; FirstContact logFirst[3] = {FirstContact::NONE, FirstContact::NONE, FirstContact::NONE};
   LogEventFifo evq = {};                             // events waiting for a row (one per row)
   uint32_t logTofOk[3] = {0, 0, 0};                  // last SEN0628 frame counters seen by the frame log
+  // Phase 4b slip detection
+  SlipState slip = {}; SlipOut slipOut = {}; uint32_t slipTofOk[3] = {0, 0, 0};
+  bool slipPending = false; uint8_t slipCount = 0, lastSlipReason = 0; uint32_t lastSlipMs = 0;
   explicit Ctl(const GripConfig& c) : cfg(c), fsm(c) {}
 };
 
@@ -852,7 +856,9 @@ void logStep(Ctl& c, uint32_t now) {
   const FsrSnapshot fs = fsrGet();
   for (int i = 0; i < 6; i++) {
     const int col = FSR_CHANNEL_NUMBER[i] - 1;           // printed order FSR1..FSR6
-    r.fmN[col] = toMilli(fs.force[i]);
+    // Filtered force of a pad the operator disabled is left empty: the slip detector ignores it
+    // too, so the offline replay sees exactly what the firmware used.
+    r.fmN[col] = (c.cfg.fsrEnabled & (1u << i)) ? toMilli(fs.force[i]) : INT16_MIN;
     r.rmN[col] = toMilli(fs.forceRaw[i]);
   }
   for (int f = 0; f < 3; f++) if (fs.contacts.stable[f]) r.contacts |= (uint8_t)(1u << f);
@@ -877,6 +883,37 @@ void logStep(Ctl& c, uint32_t now) {
     }
   logEventPop(c.evq, r.ev, r.evArg, r.evArg2);
   logPush(gLog, r);
+}
+
+// Slip detection (phase 4b): runs at the FSR rate, active in MONITOR only (reset otherwise, so a
+// tighten re-baselines). Same inputs as the logged row, so tools/slip_replay reproduces it.
+void slipUpdate(Ctl& c, uint32_t now) {
+  const State st = c.fsm.state();
+  if (st == State::START) c.slipCount = 0;
+  SlipInput in{};
+  in.tMs = now;
+  in.active = st == State::MONITOR;
+  const FsrSnapshot fs = fsrGet();
+  for (int i = 0; i < 6; i++) in.force[i] = (c.cfg.fsrEnabled & (1u << i)) ? fs.force[i] : NAN;
+  const TofSnapshot t = tofGet();
+  static uint16_t frame[3][64];
+  for (int s = 0; s < 3; s++) {
+    if (t.s[s].ok != c.slipTofOk[s]) { in.frameNew = true; c.slipTofOk[s] = t.s[s].ok; }
+    memcpy(frame[s], t.s[s].mm, sizeof(frame[s]));
+    if (t.s[s].online) in.frameValid |= (uint8_t)(1u << s);
+  }
+  in.frame = frame;
+  const ObjectMeasure m = smoothed(c.sm, now);
+  in.objValid = m.valid; in.rangeMm = m.rangeMm; in.heightMm = m.heightMm;
+  for (int k = 0; k < 3; k++) in.rad[k] = m.sensorRadiusMm[k];
+  c.slipOut = slipStep(c.slip, slipParamsOf(c.cfg), in);
+  if (c.slipOut.slip) {
+    c.slipPending = true;
+    c.slipCount++; c.lastSlipMs = now; c.lastSlipReason = c.slipOut.reason;
+    logEventPush(c.evq, LogEvent::SLIP, c.slipOut.reason, 0);
+    say(c, false, "SLIP detected (%s)%s", c.slipOut.reason == (SLIP_FSR | SLIP_TOF) ? "force + ToF" : (c.slipOut.reason & SLIP_FSR) ? "force drop" : "ToF",
+        c.cfg.slipTighten ? "" : " - tighten is off");
+  }
 }
 
 // Raw SEN0628 frames (one record per new frame set), homed or not: the slip ToF feature is
@@ -925,6 +962,10 @@ void publish(Ctl& c) {
   const Pattern pat = patternOf(c.first);
   s.pattern = (uint8_t)pat;
   s.patternOk = patternConsistent(pat, c.fsm.plan().cls);
+  s.slipArmed = c.slipOut.armed; s.slipFsrDrop = c.slipOut.fsrDrop; s.slipTofZones = (int16_t)c.slipOut.tofZones;
+  s.slipTofDisp = c.slipOut.tofDispMm; s.slipCount = c.slipCount; s.slipReason = c.lastSlipReason;
+  s.slipAgoMs = c.slipCount ? millis() - c.lastSlipMs : 0;
+  s.tightenCount = c.fsm.tightenCount(); s.tightening = c.fsm.tightening(); s.slipTighten = c.cfg.slipTighten;
   portENTER_CRITICAL(&gMux);
   memcpy(&gStatus, &s, sizeof(s));
   portEXIT_CRITICAL(&gMux);
@@ -1028,6 +1069,7 @@ void controlTask(void*) {
       const uint32_t dt = micros() - t0;
       if (dt > c->fsrUsMaxWin) c->fsrUsMaxWin = dt;
       logStep(*c, now);
+      slipUpdate(*c, now);
     }
     tofLogStep(*c, now);
     if (!modeRead || (uint32_t)(now - lastMode) >= 1000) { modeRead = true; lastMode = now; servoReadModeAndPhase(); }
@@ -1042,7 +1084,15 @@ void controlTask(void*) {
     FsmInputs fin = buildInputs(now, cmd);
     fin.homed = c->homed;
     fin.plan = c->pr.plan; fin.planWhy = c->pr.why; fin.approachOnly = c->approachOnly;
+    fin.slipEvent = c->slipPending; c->slipPending = false;
+    fin.tightenEnabled = c->cfg.slipTighten;
     MotorAction a = c->fsm.step(fin);
+    switch (c->fsm.takeTightenEvent()) {
+      case TightenEvent::STARTED: logEventPush(c->evq, LogEvent::TIGHTEN, c->fsm.tightenCount(), 0); break;
+      case TightenEvent::DONE: logEventPush(c->evq, LogEvent::TIGHTEN_DONE, 0, 0); break;
+      case TightenEvent::FAILED: logEventPush(c->evq, LogEvent::TIGHTEN_FAILED, 0, 0); break;
+      default: break;
+    }
     contactUpdate(*c);
     if (a.kind != MotorAction::NONE && !applyAction(a)) {
       c->fsm.motorFailed(servoGet().lastError);
