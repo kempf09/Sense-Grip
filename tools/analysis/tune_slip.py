@@ -202,7 +202,7 @@ def param_summary(p, defaults=None):
     return "; ".join(parts)
 
 
-LOG_LAG_ROWS = (0, 5)   # firmware writes the slip event 1..5 rows after the detector fired (event FIFO); 0 tolerated
+LOG_LAG_ROWS = (1, 5)   # firmware writes the slip event 1..5 rows after the detector fired (event FIFO)
 
 
 def logged_vs_replay(recs, replay, defaults):
@@ -294,6 +294,8 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
           f"({sum(r.gap_rows for r in recs)} rows missing in total). Without `_tof` file: "
           f"{sum(1 for r in recs if r.tof is None)}. Object from file name (no notes line): "
           f"{sum(1 for r in recs if not r.notes and r.object == r.cls)}."]
+    if sgdata.SKIPPED:
+        L += [f"- **Skipped files ({len(sgdata.SKIPPED)}):** " + "; ".join(f"`{f}` ({w})" for f, w in sgdata.SKIPPED)]
     no_mon = [r for r in recs if not r.has_monitor()]
     if no_mon:
         L += [f"- **Not replayable (no MONITOR): {len(no_mon)} recordings** ({sum(r.kind == 'manual' for r in no_mon)} "
@@ -302,7 +304,7 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
     tot, per_log, rwarn = logged_vs_replay(recs, ev.replay, defaults)
     if tot["logged"]:
         L += [f"- Firmware-logged `slip:` events: {tot['logged']} in {tot['files']} recordings; {tot['matched']} match a "
-              f"replayed event 0–{LOG_LAG_ROWS[1]} rows earlier (replay with the settings recorded in the file, else "
+              f"replayed event {LOG_LAG_ROWS[0]}–{LOG_LAG_ROWS[1]} rows earlier (replay with the settings recorded in the file, else "
               f"the defaults; {tot['replayed']} replayed events). Unmatched logged events mean replay and firmware "
               "disagree (or the settings changed during the recording)."]
     sets = {}
@@ -321,8 +323,9 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
           f"Maximise slip detection (event within [mark − {args.tol:g} s, end + {args.tol:g} s]) subject to quiet false "
           f"alarms ≤ **{lim[0]:g}/min** and disturbances with an event ≤ **{100 * lim[1]:.0f} %**; ties → lower mean "
           f"latency (in {se.LAT_TIE_MS:g} ms bins), then fewer false alarms.",
-          f"Evaluated {len(ev.cache)} parameter sets × {len(recs)} recordings = {ev.runs} replays in {runtime:.0f} s "
-          "(grid: see `tune_slip.py` docstring / README).", ""]
+          f"Evaluated {len(ev.cache)} parameter sets × {len(recs)} recordings = {ev.runs} replays "
+          "(grid: see `tune_slip.py` docstring / README). The chosen set is the best of every evaluated set "
+          "(row 1 of *Top parameter sets*).", ""]
     if not meets:
         L += ["**No evaluated parameter set meets both limits.** The set shown is the one closest to the limits; "
               "see the top-sets table and the plots before using it.", ""]
@@ -419,7 +422,7 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
               table(["recording", "warning"], dw), ""]
     if per_log:
         L += ["### Firmware-logged slip events vs replay", "",
-              table(["recording", "settings", "logged", "replayed", f"matched (0–{LOG_LAG_ROWS[1]} rows lag)"], per_log), ""]
+              table(["recording", "settings", "logged", "replayed", f"matched ({LOG_LAG_ROWS[0]}–{LOG_LAG_ROWS[1]} rows lag)"], per_log), ""]
     if uns:
         L += ["### Not scorable episodes", "",
               table(["recording", "mark", "t (s from start)", "why"],
@@ -480,6 +483,8 @@ def main(argv=None):
             b, _ = choose(ev, A, B, defaults, tr, lim, grid)
             folds.append({"object": o, "params": {k: float(v) for k, v in b.items()},
                           "train": ev.agg(b, tr), "held_out": ev.agg(b, te)})
+    # final choice over every evaluated set (the folds' fusion candidates included; no leakage for the all-data fit)
+    best = ranked(ev, [ev.params[k] for k in sorted(ev.cache)], idx_all, lim)[0]
     runtime = time.time() - t0
     write_outputs(args, recs, ev, defaults, best, folds, A, B, cands, runtime)
     a = ev.agg(best, idx_all)

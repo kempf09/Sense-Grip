@@ -57,11 +57,11 @@ class Replay:
             raise RuntimeError(f"replay --print-defaults lacks {missing}")
         return d
 
-    def run(self, rec: sgdata.Recording, params: dict) -> dict:
+    def run(self, rec: sgdata.Recording, params: dict, force_active: bool = False) -> dict:
         """Per-row outputs as numpy arrays: active, fsr_drop, fsr_flag, tof_zones, tof_disp, tof_flag, slip, reason."""
         if self.inproc:
             arr = rec.arrays()
-            r = replay_py.run(arr, params)
+            r = replay_py.run(arr, params, force_active)
             r["reason"] = np.array([replay_py.REASONS[x] if s else "" for x, s in zip(r["reason"], r["slip"])], object)
             r["t"] = arr["t"]
             return r
@@ -69,6 +69,8 @@ class Replay:
         for k in PARAM_NAMES:
             if k in params:
                 args += ["--param", f"{k}={params[k]:g}"]
+        if force_active:
+            args.append("--force-active")
         args += ["--rows", rec.path]
         if rec.tof_path:
             args += ["--tof", rec.tof_path]

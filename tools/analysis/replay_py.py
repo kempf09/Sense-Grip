@@ -3,11 +3,14 @@
 
     replay_py.py [--param name=value ...] --rows <name>.csv [--tof <name>_tof.csv] > out.csv
     replay_py.py --print-defaults
+    replay_py.py --force-active ...      (detector on every row: manual recordings never reach MONITOR)
 
 Reference: SenseGrip/slip_core.cpp (slipStep). This file mirrors it step by step, vectorised per MONITOR segment, in
 float32 like the firmware. Mirrored details (also the contract the C++ tool is cross-checked against, see
 test_pipeline.py):
-  * active input = state == MONITOR; any other state resets the detector.  Output `active` = baseline taken
+  * input values exactly as logged (rounded: forces = int mN / 1000, mm = int 0.1 mm / 10, in float32), as the
+    firmware's slipInputFromRow builds them.
+  * active input = state == MONITOR (every row with --force-active); any other state resets the detector.  Output `active` = baseline taken
     (MONITOR for >= settleMs, measured from the first MONITOR row's t_ms).
   * baseline at the first armed row: per pad filtered force, the latest frame set fed so far (if none, the first frame
     set fed after settle becomes the baseline and is not itself compared), obj_valid/range/height/rad1..3.
@@ -82,8 +85,9 @@ def _ffill_time(flag: np.ndarray, t: np.ndarray) -> np.ndarray:
     return np.where(idx >= 0, t[np.maximum(idx, 0)], -1)
 
 
-def run(arr: dict, params: dict | None = None) -> dict:
-    """Detector over one recording's arrays (sgdata.detector_arrays). Returns per-row output arrays."""
+def run(arr: dict, params: dict | None = None, force_active: bool = False) -> dict:
+    """Detector over one recording's arrays (sgdata.detector_arrays). Returns per-row output arrays.
+    force_active: run on every row as if in MONITOR (slip_replay --force-active, for manual recordings)."""
     P = coerce(params)
     n = len(arr["t"])
     out = {"active": np.zeros(n, bool), "fsr_drop": np.zeros(n, np.float32), "fsr_flag": np.zeros(n, bool),
@@ -91,7 +95,8 @@ def run(arr: dict, params: dict | None = None) -> dict:
            "tof_flag": np.zeros(n, bool), "slip": np.zeros(n, bool), "reason": np.zeros(n, np.int8)}
     win = min(P["fsrWindowMs"], 600)
     frames, fvalid = arr["frames"], arr["fvalid"]
-    for a, e in _segments(arr["monitor"]):
+    active_in = np.ones(n, bool) if force_active else arr["monitor"]
+    for a, e in _segments(active_in):
         t = arr["t"][a:e]
         rel = t - t[0]
         armed = np.nonzero(rel >= P["settleMs"])[0]
@@ -235,7 +240,7 @@ def format_csv(arr: dict, res: dict) -> str:
 
 
 def main(argv: list[str]) -> int:
-    params, rows, tof = {}, None, None
+    params, rows, tof, force = {}, None, None, False
     it = iter(argv)
     for a in it:
         if a == "--print-defaults":
@@ -253,6 +258,8 @@ def main(argv: list[str]) -> int:
                 print(f"unknown parameter {k}", file=sys.stderr)
                 return 2
             params[k] = float(v)
+        elif a == "--force-active":
+            force = True
         elif a == "--rows":
             rows = next(it, None)
         elif a == "--tof":
@@ -269,7 +276,7 @@ def main(argv: list[str]) -> int:
     elif os.path.abspath(tof) != os.path.abspath(rec.tof_path or ""):
         _, rec.tof = sgdata._read_csv_skip_comments(tof, None)
     arr = rec.arrays()
-    sys.stdout.write(format_csv(arr, run(arr, params)))
+    sys.stdout.write(format_csv(arr, run(arr, params, force)))
     return 0
 
 

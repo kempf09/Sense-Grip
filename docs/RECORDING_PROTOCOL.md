@@ -90,6 +90,7 @@ The file names appear in the Recordings panel as soon as a grasp finishes.
 
 ## 5. Hand-over
 
-Recordings panel → **Download all** (each recording gives `name.csv` and `name_tof.csv`).
-Put all files plus the notes file in one folder, zip it, and send it. Recordings stay in the
+Recordings panel → **Download all (.zip)**: one zip with every finished recording
+(`name.csv` + `name_tof.csv`). Send that zip plus the notes file. If the panel ever shows
+"BROWSER STORAGE ERROR", download the zip right away and press Clear all before continuing. Recordings stay in the
 browser until you press Clear all, so nothing is lost if a download fails.

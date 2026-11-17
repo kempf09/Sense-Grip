@@ -284,15 +284,32 @@ def label_episodes(rec: Recording) -> list[Episode]:
     return eps
 
 
+SKIPPED: list[tuple[str, str]] = []      # (file, why) of the last load_dataset call
+
+
 def load_dataset(folder: str, notes_path: str | None = None) -> list[Recording]:
-    """All main recordings in `folder` (sorted by name), with notes, object and episodes."""
-    files = sorted(f for f in os.listdir(folder)
-                   if f.lower().endswith(".csv") and not f.endswith("_tof.csv") and
-                   (NAME_RE.match(f) or f.startswith(("grasp_", "manual_"))))
+    """All main recordings in `folder` (sorted by name), with notes, object and episodes. Files that look like
+    recordings but cannot be used (browser duplicates `x (1).csv`, unreadable files) are skipped and listed in
+    `SKIPPED`."""
+    SKIPPED.clear()
+    cand = sorted(f for f in os.listdir(folder) if f.lower().endswith(".csv") and f.startswith(("grasp_", "manual_")))
     notes = load_notes(notes_path or find_notes(folder))
     recs = []
-    for f in files:
-        r = load_recording(os.path.join(folder, f))
+    for f in cand:
+        if "_tof" in f:
+            if not f.endswith("_tof.csv"):
+                SKIPPED.append((f, "frames file with an unexpected name (browser duplicate?)"))
+            continue
+        if not NAME_RE.match(f):
+            SKIPPED.append((f, "name does not match grasp_<n>_<class>_<stamp>.csv (browser duplicate?)"))
+            continue
+        try:
+            r = load_recording(os.path.join(folder, f))
+            if not len(r.rows):
+                raise ValueError("no data rows")
+        except Exception as e:                       # noqa: BLE001 - one bad file must not stop the analysis
+            SKIPPED.append((f, f"unreadable: {e}"))
+            continue
         n = notes.get(f, {})
         r.object = (n.get("object") or r.cls or "unknown").strip().lower()
         r.trial = n.get("trial") or infer_trial(r)
@@ -314,15 +331,23 @@ def detector_arrays(rec: Recording) -> dict:
     def col(c, dt=np.float32):
         return pd.to_numeric(r[c], errors="coerce").to_numpy(dtype=np.float64).astype(dt)
 
+    def fixed(c, scale):
+        """As the firmware feeds the detector (slipInputFromRow): logged int (mN, 0.1 mm) / scale in float32."""
+        v = pd.to_numeric(r[c], errors="coerce").to_numpy(dtype=np.float64)
+        ok = ~np.isnan(v)
+        out = np.full(len(v), np.nan, np.float32)
+        out[ok] = np.rint(v[ok] * scale).astype(np.float32) / np.float32(scale)
+        return out
+
     a = {
         "seq": r["seq"].to_numpy(np.int64),
         "t": r["t_ms"].to_numpy(np.int64),
         "state": r["state"].to_numpy(),
         "monitor": (r["state"] == "MONITOR").to_numpy(),
-        "force": np.stack([col(f"f{i}") for i in range(1, 7)], axis=1),
-        "obj": (col("obj_valid", np.float64) == 1),
-        "range": col("range_mm"), "height": col("height_mm"),
-        "rad": np.stack([col(f"rad{i}") for i in range(1, 4)], axis=1),
+        "force": np.stack([fixed(f"f{i}", 1000) for i in range(1, 7)], axis=1),
+        "obj": (col("obj_valid", np.float64) != 0) & ~np.isnan(col("obj_valid", np.float64)),
+        "range": fixed("range_mm", 10), "height": fixed("height_mm", 10),
+        "rad": np.stack([fixed(f"rad{i}", 10) for i in range(1, 4)], axis=1),
     }
     last = np.full(n, -1, np.int64)
     new = np.zeros(n, bool)

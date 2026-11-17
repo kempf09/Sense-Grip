@@ -33,12 +33,12 @@ FRAME_MS = 22               # one frame record per single-sensor update (3 senso
 
 # name, class, shape, elongated, contact pads (0-based), hold force range N, sensor->object mm, object size (w, h)
 OBJECTS = [
-    ("egg", "delicate", "sphere", False, [1, 3, 5], (0.20, 0.40), 45, (45, 60)),
-    ("tube", "small", "cylinder", True, [0, 1, 2, 3, 5], (0.35, 0.9), 35, (25, 120)),
-    ("mug", "medium", "cylinder", False, [0, 1, 2, 3, 4, 5], (0.5, 1.6), 60, (85, 95)),
-    ("apple", "medium", "sphere", False, [0, 1, 3, 4, 5], (0.4, 1.3), 55, (75, 75)),
-    ("drill", "large", "cylinder", True, [0, 1, 2, 3, 4, 5], (0.8, 2.2), 70, (45, 140)),
-    ("asym", "medium", "box", False, [0, 2, 3, 5], (0.4, 1.5), 50, (70, 60)),
+    ("egg", "delicate", "round", False, [1, 3, 5], (0.20, 0.40), 45, (45, 60)),
+    ("tube", "small", "elongated", True, [0, 1, 2, 3, 5], (0.35, 0.9), 35, (25, 120)),
+    ("mug", "medium", "round", False, [0, 1, 2, 3, 4, 5], (0.5, 1.6), 60, (85, 95)),
+    ("apple", "medium", "round", False, [0, 1, 3, 4, 5], (0.4, 1.3), 55, (75, 75)),
+    ("drill", "large", "elongated", True, [0, 1, 2, 3, 4, 5], (0.8, 2.2), 70, (45, 140)),
+    ("asym", "medium", "irregular", False, [0, 2, 3, 5], (0.4, 1.5), 50, (70, 60)),
 ]
 CLASS_PROFILE = {"small": (25, 1.2, 200, 300), "medium": (30, 2.0, 300, 300), "large": (35, 3.0, 450, 250),
                  "delicate": (25, 0.4, 120, 150)}

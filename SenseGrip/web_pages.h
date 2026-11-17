@@ -75,7 +75,7 @@ select{width:auto;min-width:150px;display:block}
     <div class="row"><button class="b" id="recMan">Start manual recording</button><span class="small" id="recStat">collector: starting...</span></div>
     <div class="row" style="margin-top:6px"><span class="small">Mark:</span><button class="b" data-mark="pull">Pull (P)</button><button class="b" data-mark="twist">Twist (T)</button><button class="b" data-mark="slide">Slide (S)</button><button class="b" data-mark="other">Other (O)</button><button class="b" data-mark="end">End (E)</button></div>
     <div id="recList" class="small" style="margin-top:6px">-</div>
-    <div class="btns" style="margin-top:6px"><button class="b" id="recAll">Download all</button><button class="b" id="recClr">Clear all</button></div>
+    <div class="btns" style="margin-top:6px"><button class="b" id="recAll">Download all (.zip)</button><button class="b" id="recClr">Clear all</button></div>
     <p class="small">Every grasp (1 s before START until 1 s after it is back at IDLE, or after FAULT) is recorded at 100 Hz while this page is open and kept in this browser, with the raw SEN0628 frames in a second file (_tof.csv). Mark keys P/T/S/O/E work anywhere on the page (not while typing in a field). CSV: forces in N (f = filtered, r = raw, FSR1..6), position in servo counts, sizes in mm.</p></div>
    <div class="panel"><div class="btns">
      <button class="b" id="bHome">Home</button><button class="b pri" id="bArm">Arm</button><button class="b" id="bOpen">Open</button><button class="b" id="bReset">Reset</button></div>
@@ -587,7 +587,11 @@ var TLOG={next:null},PRE=[],PRET=[],LOG={next:null,boot:null},REC=null,MAN=null,
 function idbOpen(){return new Promise(function(res){try{var q=indexedDB.open('sensegrip',1);
   q.onupgradeneeded=function(){var d=q.result;d.createObjectStore('meta');d.createObjectStore('recs',{keyPath:'id'})};
   q.onsuccess=function(){res(q.result)};q.onerror=function(){res(null)}}catch(e){res(null)}})}
-function idbPut(st,v,k){if(!DB)return;try{var o=DB.transaction(st,'readwrite').objectStore(st);k===undefined?o.put(v):o.put(v,k)}catch(e){}}
+var storeNote='';
+function storeErr(e){storeNote=' · BROWSER STORAGE ERROR: '+((e&&e.name)||'?')+' (download and Clear all)'}
+function idbPut(st,v,k){if(!DB){storeNote=' · NO BROWSER STORAGE';return}
+  try{var tx=DB.transaction(st,'readwrite'),o=tx.objectStore(st);k===undefined?o.put(v):o.put(v,k);
+    tx.onerror=function(){storeErr(tx.error)};tx.onabort=function(){storeErr(tx.error)}}catch(e){storeErr(e)}}
 function idbDel(id){if(!DB)return;try{DB.transaction('recs','readwrite').objectStore('recs').delete(id)}catch(e){}}
 function idbGet(st,k){return new Promise(function(res){if(!DB)return res(null);try{var q=DB.transaction(st).objectStore(st).get(k);q.onsuccess=function(){res(q.result||null)};q.onerror=function(){res(null)}}catch(e){res(null)}})}
 function idbAll(){return new Promise(function(res){if(!DB)return res([]);try{var q=DB.transaction('recs').objectStore('recs').getAll();q.onsuccess=function(){res(q.result||[])};q.onerror=function(){res([])}}catch(e){res([])}})}
@@ -646,7 +650,7 @@ function logPoll(){if(logBusy)return;logBusy=true;
       if(lines.length>=600)setTimeout(logPoll,0);                // behind: catch up at once
       LOG.next=nx;idbPut('meta',{next:LOG.next,boot:LOG.boot,tnext:TLOG.next},'log');
     })}).catch(function(){}).then(function(){logBusy=false;
-      var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+tofNote+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
+      var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+tofNote+storeNote+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
 function csvOf(r){var c=r.cfg||{},k=r.cls,L=[];
   L.push('# SenseGrip recording '+recName(r));L.push('# firmware: '+(r.fw||'?'));
   L.push('# started: '+new Date(r.start).toISOString()+' | rows: '+r.rows.length+' | result: '+(r.final||'-')+(r.gap?' | GAP: rows missing':''));
@@ -672,7 +676,26 @@ function renderRecs(){var l=$('recList');if(!RECS.length){l.textContent='No reco
   l.querySelectorAll('[data-dl]').forEach(function(b){b.onclick=function(){dl(RECS[+b.dataset.dl])}});
   l.querySelectorAll('[data-rm]').forEach(function(b){b.onclick=function(){var r=RECS[+b.dataset.rm];if(r.open){toast('Still recording');return}if(!confirm('Delete '+recName(r)+'?'))return;idbDel(r.id);RECS.splice(+b.dataset.rm,1);renderRecs()}})}
 $('recMan').onclick=function(){if(MAN){closeRec(MAN,'manual stop');MAN=null;this.textContent='Start manual recording'}else{MAN=newRec('manual');MAN.firstSeq=LOG.next===null?0:LOG.next;RECS.push(MAN);this.textContent='Stop manual recording';renderRecs()}};
-$('recAll').onclick=function(){var k=0;RECS.forEach(function(r){if(!r.open)setTimeout(function(){dl(r)},900*k++)})};
+// One .zip (stored, no compression) with every finished recording: name.csv + name_tof.csv.
+var CRCT=null;function crc32(b){if(!CRCT){CRCT=[];for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;CRCT[n]=c>>>0}}
+  var c=0xFFFFFFFF;for(var i=0;i<b.length;i++)c=CRCT[(c^b[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
+function zipOf(files){var enc=new TextEncoder(),parts=[],cen=[],off=0;
+  function u16(v){return[v&255,(v>>8)&255]}function u32(v){return[v&255,(v>>8)&255,(v>>16)&255,(v>>>24)&255]}
+  files.forEach(function(f){var nm=enc.encode(f.name),d=enc.encode(f.text),crc=crc32(d);
+    var h=[].concat(u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(d.length),u32(d.length),u16(nm.length),u16(0));
+    parts.push(new Uint8Array(h),nm,d);
+    cen.push({h:new Uint8Array([].concat(u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(d.length),u32(d.length),u16(nm.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(off))),nm:nm});
+    off+=h.length+nm.length+d.length});
+  var cs=0;cen.forEach(function(c){parts.push(c.h,c.nm);cs+=c.h.length+c.nm.length});
+  parts.push(new Uint8Array([].concat(u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(cs),u32(off),u16(0))));
+  return new Blob(parts,{type:'application/zip'})}
+function tofCsvOf(r){return '# SenseGrip raw SEN0628 frames for '+recName(r)+' | mm per zone, raw zone index, 0 or >=4000 = no target | row_seq links to seq in the main file\n'+tofHeader()+'\n'+r.tof.join('\n')+'\n'}
+$('recAll').onclick=function(){var files=[];RECS.forEach(function(r){if(r.open)return;files.push({name:recName(r),text:csvOf(r)});
+    if(r.tof&&r.tof.length)files.push({name:recName(r).replace(/\.csv$/,'_tof.csv'),text:tofCsvOf(r)})});
+  if(!files.length){toast('No finished recordings');return}
+  var a=document.createElement('a');a.href=URL.createObjectURL(zipOf(files));a.download='sensegrip_recordings_'+stamp(Date.now())+'.zip';
+  document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},2000)};
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
 function mark(t){post('/api/log/mark?type='+t).then(function(j){if(j)toast('Mark: '+t)})}
 document.querySelectorAll('[data-mark]').forEach(function(b){b.onclick=function(){mark(b.dataset.mark)}});
 document.addEventListener('keydown',function(ev){var tg=(ev.target&&ev.target.tagName)||'';if(/INPUT|SELECT|TEXTAREA/.test(tg)||ev.ctrlKey||ev.metaKey||ev.altKey||ev.repeat)return;
