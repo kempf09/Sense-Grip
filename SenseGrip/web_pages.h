@@ -312,7 +312,7 @@ var FORMS={
  fsrCfg:[['contactForceN','Contact force N'],['contactSamples','Contact samples'],['graspSamples','Grasp samples'],['maxForceN','Max force N'],['minActiveFsr','Min FSR channels in contact']],
  tofCfg:[['detectMm','Detect distance mm'],['detectHoldMs','Detect hold ms']],
  slipCfg:[['slipTighten','Tighten on slip','b'],['slipMode','Mode (0 force, 1 ToF, 2 either, 3 both)'],['slipFsrDropFrac','Force drop fraction'],['slipFsrWindowMs','Force window ms'],['slipFsrMinForceN','Min pad force N'],['slipFsrConfirmMs','Force confirm ms'],
-  ['slipTofZoneCount','ToF zones changed'],['slipTofZoneMm','ToF zone change mm'],['slipTofZoneFrac','ToF zone change fraction'],['slipTofNearMm','ToF near mm'],['slipTofConfirmFrames','ToF confirm frames'],['slipTofDispMm','Object displacement mm (0 = off)'],
+  ['slipTofZoneCount','ToF zones changed'],['slipTofZoneMm','ToF zone change mm'],['slipTofZoneFrac','ToF zone change fraction'],['slipTofNearMm','ToF near mm'],['slipTofConfirmMs','ToF confirm ms'],['slipTofDispMm','Object displacement mm (0 = off)'],
   ['slipFuseWindowMs','Both: window ms'],['slipSettleMs','Settle after hold ms'],['slipHoldoffMs','Hold-off after slip ms']],
  swCfg:[['sweepStepCounts','Step counts per sample (60-500)'],['sweepSpeed','Sweep speed (1-20)'],['sweepCurrent','Sweep max current (x6.5 mA, 0 = Close max current)']],
  objCfg:[['smallMaxMm','Small below width mm'],['mediumMaxMm','Medium below width mm'],['contactSpeed','Slow-to-contact speed (1-61)'],
@@ -599,10 +599,12 @@ function recName(r){return (r.kind==='grasp'?'grasp_':'manual_')+r.n+(r.cls?'_'+
 // from its own last row (the rows are still in the gripper's ring).
 function saveOpen(r){r.tofNext=TLOG.next;idbPut('recs',r)}
 function closeRec(r,why){r.open=false;if(why)r.final=r.final||why;idbPut('recs',r);if(RECS.indexOf(r)<0)RECS.push(r);renderRecs()}
-function onTofLine(line){var rs=+line.split(',')[2];
-  PRET.push(line);if(PRET.length>40)PRET.shift();               // ~2 s pre-roll
-  if(REC&&rs>=REC.firstSeq)REC.tof.push(line);
-  if(MAN&&rs>=MAN.firstSeq)MAN.tof.push(line)}
+function onTofLine(line){var p=line.split(','),fs=+p[0],rs=+p[2];
+  PRET.push(line);while(PRET.length&&+PRET[0].split(',')[2]<rs-150)PRET.shift();   // frames of the last ~1.5 s of rows
+  [REC,MAN].forEach(function(r){if(!r||r.firstSeq===undefined||rs<r.firstSeq)return;
+    if(r.lastTof!==undefined&&fs<=r.lastTof)return;                                 // already have it (after a reload)
+    if(r.lastTof!==undefined&&fs!==r.lastTof+1)r.gap=true;
+    r.tof.push(line);r.lastTof=fs})}
 function onLogLine(line){
   var f=line.split(','),seq=+f[0],st=f[2];logRows++;
   PRE.push(line);if(PRE.length>100)PRE.shift();                  // 1 s pre-roll
@@ -615,14 +617,21 @@ function onLogLine(line){
     if(REC.endAt===null&&(st==='IDLE'||st==='FAULT')){REC.endAt=seq+100;REC.final=st==='FAULT'?(REC.sawMon?'grasped, then FAULT':'FAULT'):(REC.sawMon?'grasped':'aborted')}
     if(REC.endAt!==null&&seq>=REC.endAt){closeRec(REC);REC=null}}
   else if(st==='START'){REC=newRec('grasp');REC.rows=PRE.slice();REC.firstSeq=+REC.rows[0].split(',')[0];REC.lastSeq=seq;
-    REC.tof=PRET.filter(function(t){return +t.split(',')[2]>=REC.firstSeq});RECS.push(REC);saveOpen(REC)}
+    REC.tof=PRET.filter(function(t){return +t.split(',')[2]>=REC.firstSeq});
+    if(REC.tof.length)REC.lastTof=+REC.tof[REC.tof.length-1].split(',')[0];RECS.push(REC);saveOpen(REC)}
   if(MAN){if(MAN.firstSeq===undefined)MAN.firstSeq=seq;MAN.rows.push(line);MAN.lastSeq=seq}
 }
-function tofPoll(){var from=TLOG.next===null?0:TLOG.next;
-  return fetch('/api/log/tof?from='+from+'&max=60',{cache:'no-store'}).then(function(r){if(!r.ok)return;
-    var nx=+r.headers.get('X-Log-Next'),boot=r.headers.get('X-Log-Boot');
+var tofNote='';
+function tofPoll(){var from=TLOG.next===null?4294967295:TLOG.next;   // first load: start at the newest frame
+  return fetch('/api/log/tof?from='+from+'&max=30',{cache:'no-store'}).then(function(r){
+    if(r.status===503){tofNote=' · FRAME LOG UNAVAILABLE (no _tof.csv)';return}
+    if(!r.ok)return;tofNote='';
+    var nx=+r.headers.get('X-Log-Next'),old=+r.headers.get('X-Log-Oldest'),boot=r.headers.get('X-Log-Boot');
     return r.text().then(function(t){if(LOG.boot!==null&&boot!==LOG.boot){TLOG.next=null;return}
-      t.split('\n').forEach(function(l){if(l&&l.slice(0,4)!=='seq,')onTofLine(l)});TLOG.next=nx})}).catch(function(){})}
+      if(TLOG.next!==null&&old>TLOG.next){if(REC)REC.gap=true;if(MAN)MAN.gap=true}
+      var lines=t.split('\n').filter(function(l){return l&&l.slice(0,4)!=='seq,'});
+      lines.forEach(onTofLine);TLOG.next=nx;
+      if(lines.length>=30)return tofPoll()})}).catch(function(){})}
 function logPoll(){if(logBusy)return;logBusy=true;
   var from=LOG.next===null?0:LOG.next;
   tofPoll().then(function(){return fetch('/api/log?from='+from+'&max=600',{cache:'no-store'})}).then(function(r){
@@ -637,12 +646,14 @@ function logPoll(){if(logBusy)return;logBusy=true;
       if(lines.length>=600)setTimeout(logPoll,0);                // behind: catch up at once
       LOG.next=nx;idbPut('meta',{next:LOG.next,boot:LOG.boot,tnext:TLOG.next},'log');
     })}).catch(function(){}).then(function(){logBusy=false;
-      var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
+      var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+tofNote+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
 function csvOf(r){var c=r.cfg||{},k=r.cls,L=[];
   L.push('# SenseGrip recording '+recName(r));L.push('# firmware: '+(r.fw||'?'));
   L.push('# started: '+new Date(r.start).toISOString()+' | rows: '+r.rows.length+' | result: '+(r.final||'-')+(r.gap?' | GAP: rows missing':''));
   if(k&&c[k+'ForceN']!==undefined)L.push('# class profile '+k+': stand-off '+c[k+'StandoffMm']+' mm, target '+c[k+'ForceN']+' N, max current '+c[k+'MaxCurrent']+' x6.5 mA, grasp speed '+c[k+'GraspSpeed']);
   L.push('# FSR filter: '+['none','moving average','median','EMA','Kalman'][c.fsrFilter||0]+' window '+c.fsrFilterWindow+' alpha '+c.fsrFilterAlpha+' | contact force '+c.contactForceN+' N | max force '+c.maxForceN+' N');
+  var sp=[];Object.keys(c).forEach(function(k){if(k.slice(0,4)==='slip')sp.push(k+'='+c[k])});
+  if(sp.length)L.push('# slip: '+sp.join(','));
   L.push('# units: forces N (f=filtered, r=raw, FSR1..6), pos servo counts, current mA, load %, sizes mm');
   return L.join('\n')+'\n'+LOG_HEADER+'\n'+r.rows.join('\n')+'\n'}
 var LOG_HEADER='seq,t_ms,state,step,armed,pos,speed,current_mA,load_pct,f1,f2,f3,f4,f5,f6,r1,r2,r3,r4,r5,r6,c1,c2,c3,tof_seq,obj_valid,width_mm,range_mm,height_mm,rad1,rad2,rad3,cls,shape,event';
@@ -660,7 +671,7 @@ function renderRecs(){var l=$('recList');if(!RECS.length){l.textContent='No reco
   l.innerHTML=h+'</table>';
   l.querySelectorAll('[data-dl]').forEach(function(b){b.onclick=function(){dl(RECS[+b.dataset.dl])}});
   l.querySelectorAll('[data-rm]').forEach(function(b){b.onclick=function(){var r=RECS[+b.dataset.rm];if(r.open){toast('Still recording');return}if(!confirm('Delete '+recName(r)+'?'))return;idbDel(r.id);RECS.splice(+b.dataset.rm,1);renderRecs()}})}
-$('recMan').onclick=function(){if(MAN){closeRec(MAN,'manual stop');MAN=null;this.textContent='Start manual recording'}else{MAN=newRec('manual');RECS.push(MAN);this.textContent='Stop manual recording';renderRecs()}};
+$('recMan').onclick=function(){if(MAN){closeRec(MAN,'manual stop');MAN=null;this.textContent='Start manual recording'}else{MAN=newRec('manual');MAN.firstSeq=LOG.next===null?0:LOG.next;RECS.push(MAN);this.textContent='Stop manual recording';renderRecs()}};
 $('recAll').onclick=function(){var k=0;RECS.forEach(function(r){if(!r.open)setTimeout(function(){dl(r)},900*k++)})};
 function mark(t){post('/api/log/mark?type='+t).then(function(j){if(j)toast('Mark: '+t)})}
 document.querySelectorAll('[data-mark]').forEach(function(b){b.onclick=function(){mark(b.dataset.mark)}});

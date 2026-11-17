@@ -12,13 +12,14 @@ test_pipeline.py):
   * baseline at the first armed row: per pad filtered force, the latest frame set fed so far (if none, the first frame
     set fed after settle becomes the baseline and is not itself compared), obj_valid/range/height/rad1..3.
   * FSR: per pad with baseline >= fsrMinForceN: (max over the force history within min(fsrWindowMs, 600) ms, at most 64
-    rows, since MONITOR entry - current) / baseline; a NaN current force disqualifies that pad on that row (C++ starts
-    the maximum from the current value and NaN never compares greater). fsr_flag when drop >= fsrDropFrac
-    continuously for >= fsrConfirmMs (30 ms = 4 rows at 100 Hz).
-  * ToF: frames are fed at main row seq S = every frame with row_seq <= S (several per row -> only the latest is
-    compared). Zone counted when valid (1..3999) and <= tofNearMm at baseline, sensor online at baseline and now, and
-    now invalid or |now - base| > max(tofZoneMm, tofZoneFrac * base). Flag when count >= tofZoneCount on
-    max(tofConfirmFrames, 1) consecutive frame sets; held until the next frame set.
+    rows, since MONITOR entry - current) / baseline, a NaN current force counting as 0 (the maximum starts from it).
+    fsr_flag when drop >= fsrDropFrac continuously for >= fsrConfirmMs (30 ms = 4 rows at 100 Hz).
+  * ToF: frame records are fed at main row seq S = every record with row_seq <= S (several per row -> only the latest
+    is compared; the firmware logs one record per single-sensor update, each holding all 3 sensors' latest zones).
+    Zone counted when valid (1..3999) and <= tofNearMm at baseline, sensor online at baseline and now, and now
+    invalid or |now - base| > max(tofZoneMm, tofZoneFrac * base). tof_flag when the count has been >= tofZoneCount
+    continuously for >= tofConfirmMs: from the row time at which the first record of the run was fed to the current
+    row time (re-evaluated on every row, the count only changes on rows that feed a record).
   * displacement = max |delta| of range, height, rad1..3 (NaN-ignoring) while obj_valid now and at baseline; it raises
     tof_flag only when tofDispMm > 0 and displacement >= max(tofDispMm, 0.1 * baseline range).
   * no --tof: no frames, tof_zones stays 0 (displacement still works).
@@ -40,12 +41,12 @@ import numpy as np  # noqa: E402
 import sgdata  # noqa: E402
 
 PARAM_NAMES = ["fsrDropFrac", "fsrWindowMs", "fsrMinForceN", "fsrConfirmMs", "tofNearMm", "tofZoneMm", "tofZoneFrac",
-               "tofZoneCount", "tofConfirmFrames", "tofDispMm", "mode", "fuseWindowMs", "settleMs", "holdoffMs"]
+               "tofZoneCount", "tofConfirmMs", "tofDispMm", "mode", "fuseWindowMs", "settleMs", "holdoffMs"]
 DEFAULTS = {"fsrDropFrac": 0.30, "fsrWindowMs": 300, "fsrMinForceN": 0.15, "fsrConfirmMs": 30, "tofNearMm": 350,
-            "tofZoneMm": 12, "tofZoneFrac": 0.10, "tofZoneCount": 4, "tofConfirmFrames": 2, "tofDispMm": 0.0,
+            "tofZoneMm": 12, "tofZoneFrac": 0.10, "tofZoneCount": 4, "tofConfirmMs": 150, "tofDispMm": 0.0,
             "mode": 2, "fuseWindowMs": 500, "settleMs": 500, "holdoffMs": 1500}
 _FLOAT = {"fsrDropFrac", "fsrMinForceN", "tofZoneFrac", "tofDispMm"}
-_U8 = {"tofZoneCount", "tofConfirmFrames", "mode"}
+_U8 = {"tofZoneCount", "mode"}
 SLIP_HIST = 64
 OUT_HEADER = "seq,t_ms,state,active,fsr_drop,fsr_flag,tof_zones,tof_disp_mm,tof_flag,slip,reason"
 REASONS = ["", "fsr", "tof", "fsr+tof"]
@@ -103,7 +104,8 @@ def run(arr: dict, params: dict | None = None) -> dict:
         F = arr["force"][a:e]
         # ---- FSR -------------------------------------------------------------------------------------------
         base = F[k].copy()
-        mx = F[k:].copy()
+        cur0 = np.where(np.isnan(F[k:]), np.float32(0), F[k:])     # NaN current counts as 0
+        mx = cur0.copy()
         for off in range(1, SLIP_HIST):
             j = R - off
             ok = j >= 0
@@ -114,8 +116,6 @@ def run(arr: dict, params: dict | None = None) -> dict:
                 break
             v = F[np.maximum(j, 0)]
             mx = np.where(ok[:, None] & (v > mx), v, mx)
-        cur = F[k:]
-        cur0 = np.where(np.isnan(cur), np.float32(0), cur)
         with np.errstate(divide="ignore", invalid="ignore"):
             d = (mx - cur0) / base
         elig = base >= P["fsrMinForceN"]
@@ -153,16 +153,16 @@ def run(arr: dict, params: dict | None = None) -> dict:
             cnt = (changed & elig_z).sum(axis=(1, 2))
             hit = cnt >= P["tofZoneCount"]
             # consecutive hits
-            grp = np.cumsum(~hit)
-            consec = np.zeros(len(hit), np.int64)
-            for g in np.unique(grp):
-                sel = np.nonzero(grp == g)[0]
-                h = hit[sel]
-                consec[sel] = np.cumsum(h) * h
+            # run start (row time of the first frame record of the current run of hits)
+            hstart = hit & ~np.concatenate([[False], hit[:-1]])
+            hsince = _ffill_time(hstart, tr[ev_rows])
             pos = np.searchsorted(ev_rows, np.arange(len(R)), side="right") - 1
             have = pos >= 0
             zones[have] = cnt[pos[have]]
-            zflag[have] = consec[pos[have]] >= max(P["tofConfirmFrames"], 1)
+            over = np.zeros(len(R), bool)
+            over[have] = hit[pos[have]]
+            since = np.where(have, hsince[np.maximum(pos, 0)], 0)
+            zflag = over & ((tr - since) >= P["tofConfirmMs"])
         # ---- displacement ------------------------------------------------------------------------------------
         disp = np.full(len(R), np.nan, np.float32)
         dflag = np.zeros(len(R), bool)

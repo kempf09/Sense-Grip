@@ -136,6 +136,7 @@ private:
   bool approachOnly_ = false;
   uint32_t stepTimeoutMs_ = 0;            // PRE_TOUCH slow step / GRASP: distance-scaled timeout
   bool tightening_ = false; uint8_t tightenCount_ = 0; TightenEvent tevent_ = TightenEvent::NONE;
+  bool heldByGrasp_ = false;              // MONITOR reached by force (not an approach-only stop)
   bool stopPending_ = false;               // STOP queued by motorFailed()
   uint32_t stopDueMs_ = 0;                 // ... not before this time
   char reason_[96];

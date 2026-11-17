@@ -67,6 +67,8 @@ class Recording:
     gap_rows: int = 0               # missing seq numbers inside the file
     gap_flag: bool = False          # dashboard comment says GAP
     synthetic: bool = False
+    slip_settings: dict = field(default_factory=dict)   # `# slip: slipXxx=v,...` comment -> {param: value}
+    bad_lines: int = 0
     episodes: list[Episode] = field(default_factory=list)
     _arrays: dict | None = None
 
@@ -88,6 +90,30 @@ class Recording:
 
     def monitor_s(self) -> float:
         return float((self.rows["state"] == "MONITOR").sum()) * 0.01
+
+    def has_monitor(self) -> bool:
+        return bool((self.rows["state"] == "MONITOR").any())
+
+    def data_warnings(self) -> list[str]:
+        """What the replay tool also warns about: seq jumps, MONITOR rows without any frame."""
+        w = []
+        if self.bad_lines:
+            w.append(f"{self.bad_lines} malformed lines dropped")
+        if self.gap_rows:
+            seq = self.rows["seq"].to_numpy()
+            w.append(f"seq jumps: {int((np.diff(seq) > 1).sum())} ({self.gap_rows} rows missing)")
+        elif self.gap_flag:
+            w.append("dashboard marked GAP (rows missing before/after the file)")
+        mon = self.rows["state"].to_numpy() == "MONITOR"
+        if mon.any():
+            nofr = mon & (self.arrays()["last_frame"] < 0)
+            if self.tof is None:
+                w.append("no _tof file: ToF feature cannot fire")
+            elif nofr.any():
+                w.append(f"{int(nofr.sum())} MONITOR rows without any frame")
+        elif self.kind == "manual" or len(self.marks()):
+            w.append("not replayable (no MONITOR)")
+        return w
 
     def arrays(self) -> dict:
         """Numpy views used by the detector (cached)."""
@@ -111,16 +137,19 @@ def _read_csv_skip_comments(path: str, expected: list[str] | None) -> tuple[list
     if not body:
         raise ValueError(f"{path}: no header line")
     header = body[0].split(",")
+    nf = len(header)
+    good = [body[0]] + [b for b in body[1:] if b.count(",") == nf - 1]   # drop truncated / garbled lines
     if expected is not None and header != expected:
         missing = [c for c in expected if c not in header]
         if missing:
             raise ValueError(f"{path}: header lacks columns {missing[:5]}")
     text_cols = {c: str for c in TEXT_COLS if c in header}
-    df = pd.read_csv(io.StringIO("\n".join(body) + "\n"), dtype=text_cols, keep_default_na=False,
+    df = pd.read_csv(io.StringIO("\n".join(good) + "\n"), dtype=text_cols, keep_default_na=False,
                      na_values={c: [""] for c in header if c not in text_cols}, on_bad_lines="skip",
                      engine="c", low_memory=False)
     for c in text_cols:
         df[c] = df[c].fillna("").astype(str)
+    df.attrs["bad_lines"] = len(body) - len(good)
     return comments, df
 
 
@@ -137,6 +166,7 @@ def load_recording(path: str) -> Recording:
     seq = rows["seq"].to_numpy()
     gap_rows = int(np.clip(np.diff(seq) - 1, 0, None).sum()) if len(seq) > 1 else 0
     gap_flag = any("GAP" in c for c in comments)
+    slip_settings = parse_slip_comment(comments)
     synthetic = any("synthetic" in c.lower() for c in comments if c.lower().startswith("firmware"))
     tof_path = path[:-4] + "_tof.csv"
     tof = None
@@ -150,7 +180,27 @@ def load_recording(path: str) -> Recording:
     else:
         tof_path = None
     return Recording(name=base, path=path, kind=kind, number=number, cls=cls, comments=comments, rows=rows,
-                     tof=tof, tof_path=tof_path, gap_rows=gap_rows, gap_flag=gap_flag, synthetic=synthetic)
+                     tof=tof, tof_path=tof_path, gap_rows=gap_rows, gap_flag=gap_flag, synthetic=synthetic,
+                     slip_settings=slip_settings, bad_lines=int(rows.attrs.get("bad_lines", 0)))
+
+
+def parse_slip_comment(comments: list[str]) -> dict:
+    """`# slip: slipFsrDropFrac=0.3,slipMode=2,...` (detector settings at recording time) -> {fsrDropFrac: 0.3, ...}."""
+    out = {}
+    for c in comments:
+        if not c.lower().startswith("slip:"):
+            continue
+        for kv in c[5:].replace(";", ",").split(","):
+            if "=" not in kv:
+                continue
+            k, v = (x.strip() for x in kv.split("=", 1))
+            if k.startswith("slip") and len(k) > 4:
+                k = k[4].lower() + k[5:]
+            try:
+                out[k] = float(v)
+            except ValueError:
+                pass
+    return out
 
 
 def find_notes(folder: str) -> str | None:
@@ -174,8 +224,11 @@ def load_notes(path: str | None) -> dict[str, dict]:
         return {}
     out = {}
     with open(path, encoding="utf-8", errors="replace", newline="") as fh:
-        for r in csv.DictReader(fh):
+        for r in csv.DictReader(fh, restkey="_extra"):
+            extra = r.pop("_extra", None) or []              # unquoted commas in the notes column
             r = {(k or "").strip().lower(): (v or "").strip() for k, v in r.items()}
+            if extra:
+                r["notes"] = ",".join([r.get("notes", "")] + [e.strip() for e in extra])
             f = os.path.basename(r.get("file", ""))
             if f:
                 out[f] = r
@@ -220,7 +273,12 @@ def label_episodes(rec: Recording) -> list[Episode]:
         k = int(np.searchsorted(t, tm, side="right") - 1)
         st = state[max(k, 0)] if len(state) else ""
         scorable = st == "MONITOR"
-        why = "" if scorable else f"mark in state {st or '?'}" + (" (manual recording)" if rec.kind == "manual" else "")
+        if scorable:
+            why = ""
+        elif not (state == "MONITOR").any():
+            why = "not replayable (no MONITOR)" + (" — manual recording" if rec.kind == "manual" else "")
+        else:
+            why = f"mark in state {st or '?'}"
         eps.append(Episode(rec.name, kind, typ if typ in SLIP_TYPES or typ == "other" else "other", int(tm), int(t_end),
                            end_by, scorable, why))
     return eps

@@ -474,6 +474,9 @@ void checkUpdate(Ctl& c, uint32_t now) {
 void captureBackground(Ctl& c);   // phase 3, defined below
 
 void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
+  // Operator marks are accepted in every state (they are pressed during grasps) and never abort
+  // a running Home or sweep.
+  if (r.kind == ControlRequest::LOG_MARK) { logEventPush(c.evq, LogEvent::MARK, r.value, 0); return; }
   // Any request (other than another Home press) aborts a running Home.
   if (c.homing && r.kind != ControlRequest::HOME) homeStop(c, false, "aborted by operator request");
   if (c.sweeping && r.kind != ControlRequest::SWEEP) sweepStop(c, false, "aborted by operator request");
@@ -590,9 +593,6 @@ void handleRequest(Ctl& c, const ControlRequest& r, uint32_t now, Cmd& cmdOut) {
       return;
     }
     case ControlRequest::CAPTURE_BACKGROUND: captureBackground(c); return;
-    case ControlRequest::LOG_MARK:
-      logEventPush(c.evq, LogEvent::MARK, r.value, 0);   // no 'say': marks must not hide the last action
-      return;
     case ControlRequest::EDIT_OPENING: {
       if (c.sweeping) { say(c, false, "curve edit refused: sweep running"); return; }
       if (const char* err = openingEditSet(r.index, r.mm)) { say(c, false, "curve edit: %s", err); return; }
@@ -838,12 +838,12 @@ void captureBackground(Ctl& c) {
 int16_t toMilli(float v) {
   if (!(v == v)) return INT16_MIN;
   const float x = v * 1000.0f;
-  return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
+  return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : lroundf(x));
 }
 int16_t toTenth(float v, bool ok) {
   if (!ok || !(v == v)) return INT16_MIN;
   const float x = v * 10.0f;
-  return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
+  return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : lroundf(x));
 }
 
 void logStep(Ctl& c, uint32_t now) {
@@ -895,7 +895,7 @@ void logStep(Ctl& c, uint32_t now) {
 // tighten re-baselines). Same inputs as the logged row, so tools/slip_replay reproduces it.
 void slipUpdate(Ctl& c, uint32_t now) {
   const State st = c.fsm.state();
-  if (st == State::START) c.slipCount = 0;
+  if (st == State::START || st == State::OPEN) c.slipCount = 0;   // the SLIP badge clears with Open
   SlipInput in{};
   in.tMs = now;
   in.active = st == State::MONITOR;

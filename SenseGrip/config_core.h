@@ -43,7 +43,7 @@ struct GripConfig {
   uint16_t sweepStepCounts, sweepSpeed, sweepCurrent;
   // v9: slip detection (phase 4b) = SlipParams by name with a "slip" prefix, and the tighten switch.
   float slipFsrDropFrac; uint16_t slipFsrWindowMs; float slipFsrMinForceN; uint16_t slipFsrConfirmMs;
-  uint16_t slipTofNearMm, slipTofZoneMm; float slipTofZoneFrac; uint8_t slipTofZoneCount, slipTofConfirmFrames;
+  uint16_t slipTofNearMm, slipTofZoneMm; float slipTofZoneFrac; uint8_t slipTofZoneCount; uint16_t slipTofConfirmMs;
   float slipTofDispMm; uint8_t slipMode; uint16_t slipFuseWindowMs, slipSettleMs, slipHoldoffMs;
   bool slipTighten;                                     // re-close on slip (default off)
 };

@@ -25,7 +25,8 @@ SlipOut hold(SlipState& st, const SlipParams& p, uint32_t& t, uint32_t ms, float
 TEST(slip_defaults) {
   SlipParams p = slipDefaults();
   CHECK_NEAR(p.fsrDropFrac, 0.30f, 1e-6); CHECK_EQ(p.fsrWindowMs, (uint16_t)300);
-  CHECK_EQ(p.tofZoneCount, (uint8_t)4); CHECK_EQ(p.mode, (uint8_t)2); CHECK_EQ(p.settleMs, (uint16_t)500);
+  CHECK_EQ(p.tofZoneCount, (uint8_t)4); CHECK_EQ(p.tofConfirmMs, (uint16_t)150);
+  CHECK_EQ(p.mode, (uint8_t)2); CHECK_EQ(p.settleMs, (uint16_t)500);
   CHECK_EQ(p.holdoffMs, (uint16_t)1500);
 }
 TEST(slip_not_armed_before_settle_or_outside_monitor) {
@@ -134,4 +135,24 @@ TEST(slip_param_names_round_trip) {
   int n = 0; while (slipParamName(n)) n++;
   CHECK_EQ(n, 14);
   CHECK_NEAR(slipParamGet(p, "tofZoneCount"), 4.0f, 1e-6);
+}
+
+// Review fixes: a NaN current force counts as 0 (a drop); a single glitch frame does not confirm.
+TEST(slip_nan_current_force_is_a_drop) {
+  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  uint32_t t = 0; hold(st, p, t, 1000, 2.0f);
+  bool fired = false;
+  for (int k = 0; k < 10; k++, t += 10) { SlipInput x = in(t, NAN); x.force[1] = 2.0f; if (slipStep(st, p, x).slip) fired = true; }
+  CHECK(fired);
+}
+TEST(slip_tof_single_glitch_record_does_not_confirm) {
+  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  uint32_t t = 0;
+  for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
+  for (int z = 0; z < 8; z++) FR[0][z] = 0;               // dropout glitch on sensor 1 ...
+  bool fired = false;
+  for (int k = 0; k < 6; k++, t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = true; if (slipStep(st, p, x).slip) fired = true; }   // 3 records in 30 ms
+  for (int z = 0; z < 8; z++) FR[0][z] = 200;             // ... gone again
+  for (int k = 0; k < 30; k++, t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (k % 5) == 0; if (slipStep(st, p, x).slip) fired = true; }
+  CHECK(!fired);
 }

@@ -96,14 +96,19 @@ MotorAction Fsm::run(const FsmInputs& in) {
       return NO_ACTION;
 
     case State::GRASP:
-      if (graspReached(in)) return tightening_ ? tightenEnd(true, "tighten done: higher force reached") : enter(State::MONITOR, "grasp force reached");
+      if (graspReached(in)) {
+        if (tightening_) return tightenEnd(true, "tighten done: higher force reached");
+        heldByGrasp_ = true;
+        return enter(State::MONITOR, "grasp force reached");
+      }
       if (pastCloseLimit(in.position))
         return tightening_ ? tightenEnd(false, "tighten failed: close limit reached") : enter(State::FAULT, "target force not reached before close limit");
       if (timedOut(in, stepTimeoutMs_)) return tightening_ ? tightenEnd(false, "tighten failed: timeout") : enter(State::FAULT, "GRASP timeout");
       return NO_ACTION;
 
     case State::MONITOR:
-      if (in.slipEvent && in.tightenEnabled) return tryTighten("slip");
+      // Automatic tighten only for a real grasp (not an approach-only stop) and while armed.
+      if (in.slipEvent && in.tightenEnabled && armed_ && heldByGrasp_) return tryTighten("slip");
       return NO_ACTION;                          // holds until the operator presses Open
 
     case State::OPEN: {
@@ -134,6 +139,8 @@ MotorAction Fsm::run(const FsmInputs& in) {
 MotorAction Fsm::enter(State s, const char* why) {
   State prev = state_;
   state_ = s;
+  if (s != State::GRASP && tightening_) { tightening_ = false; tevent_ = TightenEvent::FAILED; }   // aborted (FAULT, Open, ...)
+  if (s == State::START || s == State::IDLE) heldByGrasp_ = false;
   entryMs_ = nowMs_;
   setReason("%s", why);
   switch (s) {
@@ -209,6 +216,7 @@ MotorAction Fsm::handleCommand(const FsmInputs& in) {
 // Elsewhere it only clears the flag (MONITOR keeps holding until Open).
 MotorAction Fsm::onDisarm() {
   armed_ = false;
+  if (state_ == State::GRASP && tightening_) return tightenEnd(false, "Disarmed during tighten - holding");
   if (state_ == State::START || state_ == State::PRE_TOUCH || state_ == State::GRASP) {
     std::snprintf(scratch_, sizeof scratch_, "Disarmed during %s — opening", stateName(state_));
     return enter(State::OPEN, scratch_);

@@ -45,7 +45,8 @@ contact to no contact counts as a drop of 1. The short window ignores slow relax
 **ToF feature (moving away, rotating, sliding):** against the baseline frame, count zones that
 were valid (1..3999 mm) and ≤ `tofNearMm` (350 mm) at baseline and now differ by more than
 max(`tofZoneMm` (12 mm), `tofZoneFrac` (0.10) × baseline). Flag when the count ≥ `tofZoneCount`
-(4) on `tofConfirmFrames` (2) consecutive frame sets. Secondary: the smoothed object measurement
+(4) continuously for `tofConfirmMs` (150 ms; frame records arrive per sensor, so the
+confirmation is a time, not a record count). Secondary: the smoothed object measurement
 (range, height, per-sensor radius) moved by more than max(`tofDispMm`, 10 % of range) —
 always reported as a feature; it also sets the ToF flag only when `tofDispMm` > 0 (default 0 = off
 until the recordings show it is reliable while the fingers cover the object).

@@ -5,14 +5,14 @@
 SlipParams slipDefaults() {
   SlipParams p;
   p.fsrDropFrac = 0.30f; p.fsrWindowMs = 300; p.fsrMinForceN = 0.15f; p.fsrConfirmMs = 30;
-  p.tofNearMm = 350; p.tofZoneMm = 12; p.tofZoneFrac = 0.10f; p.tofZoneCount = 4; p.tofConfirmFrames = 2;
+  p.tofNearMm = 350; p.tofZoneMm = 12; p.tofZoneFrac = 0.10f; p.tofZoneCount = 4; p.tofConfirmMs = 150;
   p.tofDispMm = 0.0f; p.mode = 2; p.fuseWindowMs = 500; p.settleMs = 500; p.holdoffMs = 1500;
   return p;
 }
 
 namespace {
 const char* const NAMES[] = {"fsrDropFrac", "fsrWindowMs", "fsrMinForceN", "fsrConfirmMs", "tofNearMm", "tofZoneMm",
-                             "tofZoneFrac", "tofZoneCount", "tofConfirmFrames", "tofDispMm", "mode", "fuseWindowMs",
+                             "tofZoneFrac", "tofZoneCount", "tofConfirmMs", "tofDispMm", "mode", "fuseWindowMs",
                              "settleMs", "holdoffMs"};
 constexpr int NN = sizeof(NAMES) / sizeof(NAMES[0]);
 int idx(const char* n) { for (int i = 0; i < NN; i++) if (std::strcmp(n, NAMES[i]) == 0) return i; return -1; }
@@ -33,7 +33,7 @@ bool slipParamSet(SlipParams& p, const char* name, float v) {
     case 5: p.tofZoneMm = u16(v); return true;
     case 6: p.tofZoneFrac = v; return true;
     case 7: p.tofZoneCount = u8(v); return true;
-    case 8: p.tofConfirmFrames = u8(v); return true;
+    case 8: p.tofConfirmMs = u16(v); return true;
     case 9: p.tofDispMm = v; return true;
     case 10: p.mode = u8(v); return true;
     case 11: p.fuseWindowMs = u16(v); return true;
@@ -47,7 +47,7 @@ float slipParamGet(const SlipParams& p, const char* name) {
   switch (idx(name)) {
     case 0: return p.fsrDropFrac; case 1: return p.fsrWindowMs; case 2: return p.fsrMinForceN;
     case 3: return p.fsrConfirmMs; case 4: return p.tofNearMm; case 5: return p.tofZoneMm;
-    case 6: return p.tofZoneFrac; case 7: return p.tofZoneCount; case 8: return p.tofConfirmFrames;
+    case 6: return p.tofZoneFrac; case 7: return p.tofZoneCount; case 8: return p.tofConfirmMs;
     case 9: return p.tofDispMm; case 10: return p.mode; case 11: return p.fuseWindowMs;
     case 12: return p.settleMs; case 13: return p.holdoffMs;
   }
@@ -84,14 +84,14 @@ SlipOut slipStep(SlipState& s, const SlipParams& p, const SlipInput& in) {
   for (int i = 0; i < 6; i++) {
     const float b = s.base[i];
     if (!(b >= p.fsrMinForceN)) continue;
-    float mx = in.force[i];
+    const float cur = in.force[i] == in.force[i] ? in.force[i] : 0.0f;   // NaN (pad gone) = 0
+    float mx = cur;
     for (int k = 0; k < s.histN; k++) {
       const int j = (s.histHead - 1 - k + 2 * SLIP_HIST) % SLIP_HIST;
       if ((uint32_t)(t - s.histT[j]) > win) break;
       const float v = s.hist[j][i];
       if (v > mx) mx = v;                          // NaN never wins
     }
-    const float cur = in.force[i] == in.force[i] ? in.force[i] : 0.0f;
     const float d = (mx - cur) / b;
     if (d > drop) drop = d;
   }
@@ -117,10 +117,13 @@ SlipOut slipStep(SlipState& s, const SlipParams& p, const SlipInput& in) {
       }
     }
     s.tofZones = n;
-    s.tofConsec = n >= p.tofZoneCount ? s.tofConsec + 1 : 0;
+    if (n >= p.tofZoneCount) { if (!s.tofOver) { s.tofOver = true; s.tofSince = t; } }
+    else s.tofOver = false;
   }
   o.tofZones = s.tofZones;
-  bool tof = s.tofConsec >= (p.tofConfirmFrames ? p.tofConfirmFrames : 1);
+  // Time-based confirmation: frame records come per sensor (3 per frame set), so a record count
+  // would not mean "N frames"; a single glitch frame lasts less than tofConfirmMs.
+  bool tof = s.tofOver && (uint32_t)(t - s.tofSince) >= p.tofConfirmMs;
   if (s.obj0 && in.objValid) {
     float d = std::fabs(in.rangeMm - s.range0);
     d = std::fmax(d, std::fabs(in.heightMm - s.height0));

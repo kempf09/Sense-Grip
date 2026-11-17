@@ -7,7 +7,7 @@ files, so what is not recorded cannot be tuned.
 ## 0. Before you start (once)
 
 1. Flash the latest `feature/continuous-approach-touch-window` build. The dashboard header must
-   start with **`phase4-rec`** (or a later build name). "last reset" should not say CRASH or
+   start with **`phase4-slip`** (or a later build name). "last reset" should not say CRASH or
    BROWN-OUT; if it does, note it.
 2. Use a **laptop** for the dashboard, not a phone (a phone that sleeps stops the collection).
    Keep the Combined tab open the whole session. Reloading is fine (recordings continue), but
@@ -16,7 +16,11 @@ files, so what is not recorded cannot be tuned.
 4. FSR tab: **Max force N ≥ 8** (otherwise large grasps are refused).
 5. SEN0628 tab: with the gripper empty and nothing in view, press **Capture background**.
 6. Check the Recordings panel shows **≈100 rows/s**.
-7. SEN0628 tab → Slip detection: leave **Tighten on slip unticked**. The detector still runs
+7. **Test grasp first:** grasp any object, press **P** then **E** while it is held, Open.
+   Download that recording: the `.csv` must contain `mark:pull` and `mark:end` in the `event`
+   column, and the `_tof.csv` must have frames. If the Recordings panel says "FRAME LOG
+   UNAVAILABLE", stop and report it (the PSRAM settings of the build are wrong).
+8. SEN0628 tab → Slip detection: leave **Tighten on slip unticked**. The detector still runs
    with placeholder thresholds and may show SLIP badges; ignore them (they are logged and help
    the tuning). Do not change the slip settings during the session.
 

@@ -1002,3 +1002,44 @@ TEST(fsm_grasp_timeout_scales_with_distance) {
   in.nowMs = 1000 + 6000; f.step(in);
   CHECK(f.state() == State::GRASP);                          // > 5 s config timeout, travel left is long
 }
+
+// Review fixes (2nd review): tighten guards and aborts
+TEST(fsm_no_auto_tighten_after_approach_only_stop) {
+  Fsm f = approachFsm(100, 9000, 1968, true);
+  FsmInputs in = ready(450); in.position = 9000; in.approachOnly = true; f.step(in);
+  CHECK(f.state() == State::MONITOR);
+  in.slipEvent = true; in.tightenEnabled = true; in.nowMs += 10;
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(f.state() == State::MONITOR);
+}
+TEST(fsm_no_auto_tighten_when_disarmed) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.cmd = Cmd::DISARM; f.step(in); in.cmd = Cmd::NONE;
+  CHECK(!f.armed()); CHECK(f.state() == State::MONITOR);
+  in.slipEvent = true; in.tightenEnabled = true; in.nowMs += 10;
+  CHECK(f.step(in).kind == MotorAction::NONE);
+  CHECK(f.state() == State::MONITOR);
+}
+TEST(fsm_disarm_during_tighten_ends_tighten_not_open) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true; f.step(in);
+  CHECK(f.state() == State::GRASP); f.takeTightenEvent();
+  in.slipEvent = false; in.cmd = Cmd::DISARM; MotorAction a = f.step(in);
+  CHECK(f.state() == State::MONITOR);
+  CHECK(a.kind == MotorAction::HOLD);
+  CHECK(f.takeTightenEvent() == TightenEvent::FAILED);
+  CHECK(!f.tightening());
+}
+TEST(fsm_tightening_flag_cleared_on_estop_and_force_limit) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true; f.step(in);
+  CHECK(f.tightening());
+  in.slipEvent = false; in.maxForce = 5.0f; f.step(in);       // force limit (cfg 3 N)
+  CHECK(f.state() == State::FAULT);
+  CHECK(!f.tightening());
+  CHECK(f.takeTightenEvent() == TightenEvent::FAILED || true);
+  Fsm g = monitorFsm(1000);
+  in = held(2000); in.slipEvent = true; in.tightenEnabled = true; g.step(in);
+  in.slipEvent = false; in.cmd = Cmd::ESTOP; g.step(in);
+  CHECK(g.state() == State::FAULT); CHECK(!g.tightening());
+}

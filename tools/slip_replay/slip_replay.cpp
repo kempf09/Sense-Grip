@@ -74,6 +74,20 @@ int main(int argc, char** argv) {
     char n[16]; std::snprintf(n, sizeof n, "s%d_z%02d", s + 1, z); tZ[s][z] = need(T, n);
   }
 
+  // Warnings (stderr, lines start with "warning:"): the replay can only match the firmware on
+  // complete recordings.
+  {
+    long prev = -1; int jumps = 0, monitor = 0;
+    for (const auto& r : R.rows) {
+      const long s = std::strtol(at(r, cSeq).c_str(), nullptr, 10);
+      if (prev >= 0 && s != prev + 1) jumps++;
+      prev = s;
+      if (at(r, cSt) == "MONITOR") monitor++;
+    }
+    if (jumps) std::fprintf(stderr, "warning: %d seq jump(s) in %s: detector history differs from the firmware there\n", jumps, rowsPath);
+    if (!monitor) std::fprintf(stderr, "warning: no MONITOR rows in %s: the detector never runs\n", rowsPath);
+    if (monitor && T.rows.empty()) std::fprintf(stderr, "warning: no frames for %s: the ToF feature is off in this replay\n", rowsPath);
+  }
   SlipState st; slipReset(st);
   static uint16_t frame[3][64]; uint8_t fvalid = 0; bool haveFrame = false; size_t ti = 0;
   std::printf("seq,t_ms,state,active,fsr_drop,fsr_flag,tof_zones,tof_disp_mm,tof_flag,slip,reason\n");

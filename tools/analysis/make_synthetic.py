@@ -25,10 +25,11 @@ import numpy as np
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import replay_py  # noqa: E402
 import sgdata  # noqa: E402
 
 DT = 10                     # ms per row
-FRAME_MS = 66               # SEN0628 frame-set period (~15 Hz)
+FRAME_MS = 22               # one frame record per single-sensor update (3 sensors in turn, ~15 Hz each)
 
 # name, class, shape, elongated, contact pads (0-based), hold force range N, sensor->object mm, object size (w, h)
 OBJECTS = [
@@ -228,7 +229,7 @@ def make_recording(rng, obj, trial, rep, num, t_start, seq0, opts):
     contacts = np.stack([(filt[:, 2 * f] >= 0.1) | (filt[:, 2 * f + 1] >= 0.1) for f in range(3)], axis=1)
     # frames
     ft = np.arange(t_start + int(rng.uniform(0, FRAME_MS)), t_stop - DT, FRAME_MS)
-    ft = np.sort(ft + rng.integers(-5, 6, len(ft)))
+    ft = np.sort(ft + rng.integers(-3, 4, len(ft)))
     fing = 1 + 0.6 * (1 - ramp(ft, T["PRE_TOUCH"], 1500) * (1 - ramp(ft, T["OPEN"], 400)))   # fingers open: farther
     Z = np.repeat(sc.base[None], len(ft), 0) * np.where(sc.is_obj[None], fing[:, None, None], 1.0)
     for amp, fn in sc.zone_terms:
@@ -241,6 +242,12 @@ def make_recording(rng, obj, trial, rep, num, t_start, seq0, opts):
     noisy = np.where(Z <= 0, 0, noisy)
     noisy[rng.random(noisy.shape) < 0.003] = 0                 # single-zone dropouts
     zones = np.clip(np.rint(noisy), 0, 4000).astype(int)
+    rec_i = np.arange(len(ft))                                  # record j refreshes sensor j % 3 only
+    for s in range(3):
+        fresh = rec_i[rec_i % 3 == s]
+        if len(fresh):
+            k = np.maximum(np.searchsorted(fresh, rec_i, side="right") - 1, 0)
+            zones[:, s] = zones[fresh[k], s]
     fvalid = np.full(len(ft), 7)
     if opts.get("sensor_off"):
         off = (ft > T["MONITOR"] + 8000) & (ft < T["MONITOR"] + 12000)
@@ -255,7 +262,7 @@ def make_recording(rng, obj, trial, rep, num, t_start, seq0, opts):
     disp_frames = (Z[keep] - (np.repeat(sc.base[None], keep.sum(), 0) *
                    np.where(objmask[None], fing[keep][:, None, None], 1.0)))[:, objmask].mean(axis=1)
     disp_rows = np.interp(t, ft, disp_frames) if len(ft) else np.zeros(n)
-    meas_ok = (t >= T["START"]) & ((sc.free_at is None) | (t < (sc.free_at or 0) + 300))
+    meas_ok = (t >= T["START"]) & ((sc.free_at is None) | (t < (sc.free_at or 0) + 100))
     rng_mm = d_obj + 40 + 0.8 * disp_rows + rng.normal(0, 0.4, n)
     width = w + rng.normal(0, 0.3, n)
     height = h + 0.3 * disp_rows + rng.normal(0, 0.4, n)
@@ -325,6 +332,7 @@ def make_recording(rng, obj, trial, rep, num, t_start, seq0, opts):
     if not manual:
         head.append(f"# class profile {cls}: stand-off {prof[0]} mm, target {prof[1]} N, max current {prof[2]} "
                     f"x6.5 mA, grasp speed {prof[3]}")
+    head.append("# slip: " + ",".join(f"slip{k[0].upper()}{k[1:]}={float(v):g}" for k, v in replay_py.DEFAULTS.items()))
     head += ["# FSR filter: EMA window 5 alpha 0.3 | contact force 0.1 N | max force 8 N",
              "# units: forces N (f=filtered, r=raw, FSR1..6), pos servo counts, current mA, load %, sizes mm"]
     main = "\n".join(head + [",".join(sgdata.MAIN_HEADER)] + lines) + "\n"
@@ -335,6 +343,23 @@ def make_recording(rng, obj, trial, rep, num, t_start, seq0, opts):
                          f"{fvalid[j]}," + ",".join(map(str, zones[j].ravel())))
     tof = "\n".join(tof_lines) + "\n"
     return nm, main, (None if opts.get("no_tof") else tof), t_stop, seq0 + n, len(ft)
+
+
+def add_logged_slip_events(path, rng):
+    """What the firmware (default settings) would have logged: `slip:<reason>` 1..3 rows after the detector fired."""
+    rec = sgdata.load_recording(path)
+    out = replay_py.run(rec.arrays(), {})
+    with open(path) as fh:
+        lines = fh.read().split("\n")
+    h = next(i for i, ln in enumerate(lines) if ln.startswith("seq,"))
+    for i in np.nonzero(out["slip"])[0]:
+        for k in range(int(rng.integers(1, 4)), 6):
+            j = h + 1 + i + k
+            if j < len(lines) and lines[j] and lines[j].endswith(","):
+                lines[j] += "slip:" + replay_py.REASONS[out["reason"][i]]
+                break
+    with open(path, "w", newline="\n") as fh:
+        fh.write("\n".join(lines))
 
 
 def generate(out_dir: str, seed: int = 1) -> list[str]:
@@ -366,6 +391,8 @@ def generate(out_dir: str, seed: int = 1) -> list[str]:
         if tof is not None:
             with open(os.path.join(out_dir, nm[:-4] + "_tof.csv"), "w", newline="\n") as fh:
                 fh.write(tof)
+        if not manual:
+            add_logged_slip_events(os.path.join(out_dir, nm), rng)
         names.append(nm)
         gap_s = int(rng.uniform(20_000, 60_000))
         seq_cur = seq_end + gap_s // DT
@@ -376,7 +403,7 @@ def generate(out_dir: str, seed: int = 1) -> list[str]:
             notes.append(f"{nm},mug,C pull,manual (jogged closed)")
         elif i % 19 != 4:                                         # partial notes: some files missing
             obj_name = "asymmetric" if obj[0] == "asym" else obj[0]
-            notes.append(f"{nm},{obj_name},{trial_names[tr]} {rep},{note}")
+            notes.append(f"{nm},{obj_name},{trial_names[tr]} {rep},{chr(34) + note + chr(34) if ',' in note else note}")
     with open(os.path.join(out_dir, "notes.csv"), "w", newline="\n") as fh:
         fh.write("\n".join(notes) + "\n")
     return names

@@ -1,0 +1,4 @@
+# tools/analysis (slip-detector replay analysis and tuning); python >= 3.10
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7

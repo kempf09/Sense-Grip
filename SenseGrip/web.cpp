@@ -313,7 +313,7 @@ static const Field FIELDS[] = {
   F_(sweepStepCounts, T_U16), F_(sweepSpeed, T_U16), F_(sweepCurrent, T_U16),
   F_(slipFsrDropFrac, T_F), F_(slipFsrWindowMs, T_U16), F_(slipFsrMinForceN, T_F), F_(slipFsrConfirmMs, T_U16),
   F_(slipTofNearMm, T_U16), F_(slipTofZoneMm, T_U16), F_(slipTofZoneFrac, T_F), F_(slipTofZoneCount, T_U8),
-  F_(slipTofConfirmFrames, T_U8), F_(slipTofDispMm, T_F), F_(slipMode, T_U8), F_(slipFuseWindowMs, T_U16),
+  F_(slipTofConfirmMs, T_U16), F_(slipTofDispMm, T_F), F_(slipMode, T_U8), F_(slipFuseWindowMs, T_U16),
   F_(slipSettleMs, T_U16), F_(slipHoldoffMs, T_U16), F_(slipTighten, T_BOOL),
   { "tofMask0", T_MASK, offsetof(GripConfig, tofMask), 0 },
   { "tofMask1", T_MASK, offsetof(GripConfig, tofMask), 1 },
@@ -478,14 +478,14 @@ static void handleLogGet() {
   server.sendContent("");
 }
 
-// GET /api/log/tof?from=<seq>&max=<n<=60>: raw SEN0628 frames as CSV (same headers as /api/log).
+// GET /api/log/tof?from=<seq>&max=<n<=30>: raw SEN0628 frames as CSV (same headers as /api/log).
 static void handleTofLogGet() {
   const TofRing* ring = controlTofLog();
   if (!ring) { sendError(503, "frame log not available (no PSRAM)"); return; }
   long long from = 0, mx = 30;
   if (server.hasArg("from") && !parseI(server.arg("from"), 0, 0xFFFFFFFFLL, from)) { sendError(400, "bad from"); return; }
-  if (server.hasArg("max") && !parseI(server.arg("max"), 1, 60, mx)) { sendError(400, "max must be 1..60"); return; }
-  static TofFrameRec frames[60];                 // web task only (~23 KB)
+  if (server.hasArg("max") && !parseI(server.arg("max"), 1, 30, mx)) { sendError(400, "max must be 1..30"); return; }
+  static TofFrameRec frames[30];                 // web task only (~12 KB)
   uint32_t oldest = 0, next = 0;
   const uint32_t n = tofLogRead(*ring, (uint32_t)from, (uint32_t)mx, frames, oldest, next);
   char h[16];

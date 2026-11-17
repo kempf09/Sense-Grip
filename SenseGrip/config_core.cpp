@@ -27,7 +27,7 @@ GripConfig defaultConfig() {
   const SlipParams sp = slipDefaults();
   c.slipFsrDropFrac = sp.fsrDropFrac; c.slipFsrWindowMs = sp.fsrWindowMs; c.slipFsrMinForceN = sp.fsrMinForceN;
   c.slipFsrConfirmMs = sp.fsrConfirmMs; c.slipTofNearMm = sp.tofNearMm; c.slipTofZoneMm = sp.tofZoneMm;
-  c.slipTofZoneFrac = sp.tofZoneFrac; c.slipTofZoneCount = sp.tofZoneCount; c.slipTofConfirmFrames = sp.tofConfirmFrames;
+  c.slipTofZoneFrac = sp.tofZoneFrac; c.slipTofZoneCount = sp.tofZoneCount; c.slipTofConfirmMs = sp.tofConfirmMs;
   c.slipTofDispMm = sp.tofDispMm; c.slipMode = sp.mode; c.slipFuseWindowMs = sp.fuseWindowMs;
   c.slipSettleMs = sp.settleMs; c.slipHoldoffMs = sp.holdoffMs; c.slipTighten = false;
   return c;
@@ -94,7 +94,7 @@ bool clampConfig(GripConfig& c) {
   ch |= clampInt(c.slipTofZoneMm, 1, 500);
   ch |= clampF(c.slipTofZoneFrac, 0.0f, 1.0f, d.slipTofZoneFrac);
   ch |= clampInt(c.slipTofZoneCount, 1, 192);
-  ch |= clampInt(c.slipTofConfirmFrames, 1, 20);
+  ch |= clampInt(c.slipTofConfirmMs, 0, 2000);
   ch |= clampF(c.slipTofDispMm, 0.0f, 200.0f, d.slipTofDispMm);
   if (c.slipMode > 3) { c.slipMode = d.slipMode; ch = true; }
   ch |= clampInt(c.slipFuseWindowMs, 0, 5000);
@@ -156,7 +156,7 @@ SlipParams slipParamsOf(const GripConfig& c) {
   SlipParams p;
   p.fsrDropFrac = c.slipFsrDropFrac; p.fsrWindowMs = c.slipFsrWindowMs; p.fsrMinForceN = c.slipFsrMinForceN;
   p.fsrConfirmMs = c.slipFsrConfirmMs; p.tofNearMm = c.slipTofNearMm; p.tofZoneMm = c.slipTofZoneMm;
-  p.tofZoneFrac = c.slipTofZoneFrac; p.tofZoneCount = c.slipTofZoneCount; p.tofConfirmFrames = c.slipTofConfirmFrames;
+  p.tofZoneFrac = c.slipTofZoneFrac; p.tofZoneCount = c.slipTofZoneCount; p.tofConfirmMs = c.slipTofConfirmMs;
   p.tofDispMm = c.slipTofDispMm; p.mode = c.slipMode; p.fuseWindowMs = c.slipFuseWindowMs;
   p.settleMs = c.slipSettleMs; p.holdoffMs = c.slipHoldoffMs;
   return p;

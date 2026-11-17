@@ -12,7 +12,7 @@ struct SlipParams {
   uint16_t tofZoneMm;       // zone change threshold, mm (12) ...
   float tofZoneFrac;        // ... or this fraction of the baseline reading (0.10), whichever is larger
   uint8_t tofZoneCount;     // changed zones needed (4)
-  uint8_t tofConfirmFrames; // consecutive frame sets (2)
+  uint16_t tofConfirmMs;    // count must hold this long (150 ms); frame records arrive per sensor
   float tofDispMm;          // smoothed-measurement displacement that counts; 0 = off (default)
   uint8_t mode;             // 0 FSR only, 1 ToF only, 2 either, 3 both within fuseWindowMs
   uint16_t fuseWindowMs;    // (500)
@@ -54,7 +54,7 @@ struct SlipState {
   float base[6];
   uint32_t histT[SLIP_HIST]; float hist[SLIP_HIST][6]; int histHead, histN;
   uint16_t frame0[3][64]; uint8_t valid0;
-  int tofConsec; int tofZones;
+  bool tofOver; uint32_t tofSince; int tofZones;
   bool obj0; float range0, height0, rad0[3];
 };
 void slipReset(SlipState& s);
