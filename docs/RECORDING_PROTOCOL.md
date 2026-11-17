@@ -37,6 +37,10 @@ If someone helps, one person handles the object and the other presses keys.
 
 Objects: egg, tube, mug, apple, drill (by its handle), the asymmetric object, and any other
 object you want the detector to work on. Present each one as in the demo (palm up, centred).
+**Place the object (or hang it on its string) and take your hand out of the sensor view before
+pressing Arm**: a hand near the object is measured as part of it and can pick the wrong class.
+If START keeps giving up ("object size not stable"), the object is near a class boundary:
+use the class override.
 
 | # | Trial | What to do | Repeats |
 |---|---|---|---|
