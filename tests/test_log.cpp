@@ -32,8 +32,8 @@ TEST(log_read_after_overwrite_reports_oldest) {
   static LogRow st[10]; LogRing r; logInit(r, st, 10);
   for (int i = 0; i < 25; i++) logPush(r, blank());
   LogRow out[20]; uint32_t oldest, nx;
-  CHECK_EQ(logRead(r, 3, 20, out, oldest, nx), 10u);
-  CHECK_EQ(oldest, 15u); CHECK_EQ(out[0].seq, 15u); CHECK_EQ(nx, 25u);
+  CHECK_EQ(logRead(r, 3, 20, out, oldest, nx), 9u);       // the slot the writer fills next is never read
+  CHECK_EQ(oldest, 16u); CHECK_EQ(out[0].seq, 16u); CHECK_EQ(nx, 25u);
 }
 TEST(log_read_respects_max) {
   static LogRow st[10]; LogRing r; logInit(r, st, 10);
@@ -89,8 +89,8 @@ TEST(tof_log_push_read_and_csv) {
     tofLogPush(r, f);
   }
   TofFrameRec out[8]; uint32_t oldest, nx;
-  CHECK_EQ(tofLogRead(r, 0, 8, out, oldest, nx), 4u);
-  CHECK_EQ(oldest, 2u); CHECK_EQ(out[0].seq, 2u); CHECK_EQ(nx, 6u);
+  CHECK_EQ(tofLogRead(r, 0, 8, out, oldest, nx), 3u);
+  CHECK_EQ(oldest, 3u); CHECK_EQ(out[0].seq, 3u); CHECK_EQ(nx, 6u);
   const std::string h = TOF_CSV_HEADER;
   CHECK_EQ(fields(h), 5 + 192);
   CHECK(h.rfind("seq,t_ms,row_seq,pos,valid,s1_z00,", 0) == 0);
@@ -100,7 +100,7 @@ TEST(tof_log_push_read_and_csv) {
   CHECK(n > 0 && b[n - 1] == '\n');
   auto v = split(b);
   CHECK_EQ((int)v.size(), 197);
-  CHECK(v[0] == "2" && v[2] == "102" && v[3] == "-5" && v[4] == "5");
+  CHECK(v[0] == "3" && v[2] == "103" && v[3] == "-5" && v[4] == "5");
   CHECK(v[5] == "0" && v[5 + 64] == "1000" && v[196] == "2063");
 }
 TEST(log_csv_marks_and_slip_events) {

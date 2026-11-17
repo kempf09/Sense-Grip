@@ -452,7 +452,9 @@ void checkUpdate(Ctl& c, uint32_t now) {
   const ServoSnapshot sv = servoGet();
   const TofSnapshot t = tofGet();
   const int32_t fromOpen = c.cfg.closePositive ? sv.fb.position - c.cfg.openZero : c.cfg.openZero - sv.fb.position;
-  if ((st != State::IDLE && st != State::MONITOR) || fromOpen <= FINGERS_INVISIBLE_COUNTS || t.objectPresent || c.jogActive) {
+  // IDLE only: in MONITOR the held object covers finger zones and a false mismatch would un-home
+  // the gripper with an object in it (Open is then refused).
+  if (st != State::IDLE || fromOpen <= FINGERS_INVISIBLE_COUNTS || t.objectPresent || c.jogActive) {
     c.mismatching = false; return;
   }
   uint16_t frame[3][64];
@@ -863,12 +865,15 @@ void logStep(Ctl& c, uint32_t now) {
     r.rmN[col] = toMilli(fs.forceRaw[i]);
   }
   for (int f = 0; f < 3; f++) if (fs.contacts.stable[f]) r.contacts |= (uint8_t)(1u << f);
-  r.tofSeq = (uint16_t)(c.objOk[0] + c.objOk[1] + c.objOk[2]);
+  r.tofSeq = (uint16_t)(c.logTofOk[0] + c.logTofOk[1] + c.logTofOk[2]);   // counts when not homed too
   const ObjectMeasure m = smoothed(c.sm, now);
   r.objValid = m.valid;
   r.width10 = toTenth(m.widthMm, m.valid); r.range10 = toTenth(m.rangeMm, m.valid); r.height10 = toTenth(m.heightMm, m.valid);
   for (int s = 0; s < 3; s++) r.rad10[s] = toTenth(m.sensorRadiusMm[s], m.valid);
-  r.cls = c.pr.plan.valid ? (uint8_t)c.pr.plan.cls : 255;
+  // From PRE_TOUCH on, the class the FSM latched (the live plan keeps changing as the fingers
+  // cover the object); before that, the live plan.
+  if (st == State::PRE_TOUCH || st == State::GRASP || st == State::MONITOR) r.cls = (uint8_t)c.fsm.plan().cls;
+  else r.cls = c.pr.plan.valid ? (uint8_t)c.pr.plan.cls : 255;
   r.shape = (uint8_t)m.shape;
   // Events go through a FIFO, one per row, in the order they happened.
   if (st != c.logState) {
@@ -1011,7 +1016,7 @@ void controlTask(void*) {
   {   // phase 4a data log: ~5 min at 100 Hz in PSRAM (small fallback in internal RAM)
     LogRow* st = (LogRow*)ps_malloc(sizeof(LogRow) * LOG_CAP);
     uint32_t cap = LOG_CAP;
-    if (!st) { cap = 3000; st = (LogRow*)malloc(sizeof(LogRow) * cap); }
+    if (!st) { cap = 300; st = (LogRow*)malloc(sizeof(LogRow) * cap); }   // no PSRAM: 3 s only, keep the heap for Wi-Fi
     if (st) logInit(gLog, st, cap);
     TofFrameRec* ft = (TofFrameRec*)ps_malloc(sizeof(TofFrameRec) * TOF_LOG_CAP);
     if (ft) tofLogInit(gTofLog, ft, TOF_LOG_CAP);        // no internal-RAM fallback (390 B per frame)

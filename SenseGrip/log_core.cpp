@@ -18,20 +18,23 @@ template <class T, class R> void ringPush(R& r, T rec) {
   const uint32_t s = r.next;
   rec.seq = s;
   r.rows[s % r.cap] = rec;
-  r.next = s + 1;                              // published after the record is complete
+  __atomic_store_n(&r.next, s + 1, __ATOMIC_RELEASE);   // published after the record is complete
 }
 template <class T, class R>
 uint32_t ringRead(const R& r, uint32_t fromSeq, uint32_t max, T* out, uint32_t& oldest, uint32_t& nextOut) {
-  const uint32_t head = r.next;
-  oldest = head > r.cap ? head - r.cap : 0;
+  const uint32_t head = __atomic_load_n(&r.next, __ATOMIC_ACQUIRE);
+  // The slot of seq head - cap is the one the writer fills next: never read it.
+  oldest = head >= r.cap ? head - r.cap + 1 : 0;
   uint32_t s = fromSeq < oldest ? oldest : fromSeq;
   if (s > head) s = head;
   uint32_t n = 0;
   while (s < head && n < max) {
     out[n] = r.rows[s % r.cap];
     if (out[n].seq != s) break;                // overwritten while copying
-    const uint32_t h2 = r.next;                // still inside the window after the copy?
-    if (h2 > r.cap && s < h2 - r.cap) break;
+    // Still inside the window after the copy? The writer may be filling seq h2 right now, which
+    // reuses the slot of seq h2 - cap: that one is unsafe too.
+    const uint32_t h2 = __atomic_load_n(&r.next, __ATOMIC_ACQUIRE);
+    if (s + r.cap <= h2) break;
     n++; s++;
   }
   nextOut = s;

@@ -595,6 +595,9 @@ function stamp(t){var d=new Date(t),p=function(n){return(n<10?'0':'')+n};return 
 function newRec(kind){recSeqN++;return{id:Date.now()+Math.random(),kind:kind,n:recSeqN,start:Date.now(),rows:[],tof:[],marks:0,cls:'',width:'',final:'',gap:false,endAt:null,sawMon:false,open:true,
   fw:(S&&S.diag&&S.diag.fw)||'',cfg:CFG?JSON.parse(JSON.stringify(CFG)):null}}
 function recName(r){return (r.kind==='grasp'?'grasp_':'manual_')+r.n+(r.cls?'_'+r.cls:'')+'_'+stamp(r.start)+'.csv'}
+// An open recording is saved with the collector position it has reached, so a reload resumes
+// from its own last row (the rows are still in the gripper's ring).
+function saveOpen(r){r.tofNext=TLOG.next;idbPut('recs',r)}
 function closeRec(r,why){r.open=false;if(why)r.final=r.final||why;idbPut('recs',r);if(RECS.indexOf(r)<0)RECS.push(r);renderRecs()}
 function onTofLine(line){var rs=+line.split(',')[2];
   PRET.push(line);if(PRET.length>40)PRET.shift();               // ~2 s pre-roll
@@ -604,14 +607,16 @@ function onLogLine(line){
   var f=line.split(','),seq=+f[0],st=f[2];logRows++;
   PRE.push(line);if(PRE.length>100)PRE.shift();                  // 1 s pre-roll
   if(f[34]&&f[34].slice(0,5)==='mark:'){if(REC)REC.marks++;if(MAN)MAN.marks++}
-  if(REC){REC.rows.push(line);
-    if(!REC.cls&&f[32])REC.cls=f[32];if(!REC.width&&f[26])REC.width=f[26];
+  [REC,MAN].forEach(function(r){if(r&&r.lastSeq!==undefined&&seq!==r.lastSeq+1)r.gap=true});
+  if(REC){REC.rows.push(line);REC.lastSeq=seq;
+    if(f[32]&&(st==='PRE_TOUCH'||st==='GRASP'||st==='MONITOR'))REC.cls=f[32];   // the latched class
+    else if(!REC.cls&&f[32])REC.cls=f[32];if(!REC.width&&f[26])REC.width=f[26];
     if(st==='MONITOR')REC.sawMon=true;
-    if(REC.endAt===null&&(st==='IDLE'||st==='FAULT')){REC.endAt=seq+100;REC.final=st==='FAULT'?'FAULT':(REC.sawMon?'grasped':'aborted')}
+    if(REC.endAt===null&&(st==='IDLE'||st==='FAULT')){REC.endAt=seq+100;REC.final=st==='FAULT'?(REC.sawMon?'grasped, then FAULT':'FAULT'):(REC.sawMon?'grasped':'aborted')}
     if(REC.endAt!==null&&seq>=REC.endAt){closeRec(REC);REC=null}}
-  else if(st==='START'){REC=newRec('grasp');REC.rows=PRE.slice();REC.firstSeq=+REC.rows[0].split(',')[0];
-    REC.tof=PRET.filter(function(t){return +t.split(',')[2]>=REC.firstSeq});RECS.push(REC)}
-  if(MAN){if(MAN.firstSeq===undefined)MAN.firstSeq=seq;MAN.rows.push(line)}
+  else if(st==='START'){REC=newRec('grasp');REC.rows=PRE.slice();REC.firstSeq=+REC.rows[0].split(',')[0];REC.lastSeq=seq;
+    REC.tof=PRET.filter(function(t){return +t.split(',')[2]>=REC.firstSeq});RECS.push(REC);saveOpen(REC)}
+  if(MAN){if(MAN.firstSeq===undefined)MAN.firstSeq=seq;MAN.rows.push(line);MAN.lastSeq=seq}
 }
 function tofPoll(){var from=TLOG.next===null?0:TLOG.next;
   return fetch('/api/log/tof?from='+from+'&max=60',{cache:'no-store'}).then(function(r){if(!r.ok)return;
@@ -627,7 +632,9 @@ function logPoll(){if(logBusy)return;logBusy=true;
       if(LOG.boot!==null&&boot!==LOG.boot){if(REC){REC.gap=true;closeRec(REC,'gripper restarted');REC=null}if(MAN)MAN.gap=true;LOG.next=null;LOG.boot=boot;return}
       LOG.boot=boot;
       if(LOG.next!==null&&old>LOG.next){if(REC)REC.gap=true;if(MAN)MAN.gap=true}
-      t.split('\n').forEach(function(l){if(l&&l.slice(0,4)!=='seq,')onLogLine(l)});
+      var lines=t.split('\n').filter(function(l){return l&&l.slice(0,4)!=='seq,'});
+      lines.forEach(onLogLine);
+      if(lines.length>=600)setTimeout(logPoll,0);                // behind: catch up at once
       LOG.next=nx;idbPut('meta',{next:LOG.next,boot:LOG.boot,tnext:TLOG.next},'log');
     })}).catch(function(){}).then(function(){logBusy=false;
       var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
@@ -660,11 +667,12 @@ document.querySelectorAll('[data-mark]').forEach(function(b){b.onclick=function(
 document.addEventListener('keydown',function(ev){var tg=(ev.target&&ev.target.tagName)||'';if(/INPUT|SELECT|TEXTAREA/.test(tg)||ev.ctrlKey||ev.metaKey||ev.altKey||ev.repeat)return;
   var k={p:'pull',t:'twist',s:'slide',o:'other',e:'end'}[ev.key.toLowerCase()];if(k){ev.preventDefault();mark(k)}});
 $('recClr').onclick=function(){if(!confirm('Delete every recording stored in this browser?'))return;RECS.filter(function(r){return !r.open}).forEach(function(r){idbDel(r.id)});RECS=RECS.filter(function(r){return r.open});renderRecs()};
-setInterval(function(){[REC,MAN].forEach(function(r){if(r)idbPut('recs',r)})},5000);
+setInterval(function(){[REC,MAN].forEach(function(r){if(r)saveOpen(r)})},5000);
 idbOpen().then(function(d){DB=d;return Promise.all([idbGet('meta','log'),idbAll()])}).then(function(v){
   var m=v[0];if(m){LOG.next=m.next;LOG.boot=m.boot;TLOG.next=m.tnext===undefined?null:m.tnext}
   RECS=(v[1]||[]).sort(function(a,b){return a.start-b.start});
   RECS.forEach(function(r){recSeqN=Math.max(recSeqN,r.n||0);if(r.open){if(r.kind==='grasp'&&!REC)REC=r;else{r.open=false;r.final=r.final||'page closed';idbPut('recs',r)}}});
+  if(REC&&REC.lastSeq!==undefined&&(LOG.next===null||REC.lastSeq+1<LOG.next)){LOG.next=REC.lastSeq+1;if(REC.tofNext!==undefined&&REC.tofNext!==null)TLOG.next=REC.tofNext}
   renderRecs();setInterval(logPoll,250)});
 buildForms();mkFingers();mkFsr();loadCfg();
 setInterval(pollStatus,200);setInterval(pollTof,200);
