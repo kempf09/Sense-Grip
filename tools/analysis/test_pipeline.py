@@ -211,6 +211,36 @@ def test_cpp_agrees():
             cs, ps = arr["seq"][c["slip"]].tolist(), arr["seq"][p["slip"]].tolist()
             assert cs == ps, f"{r.name} {params}: C++ {cs} vs Python {ps}"
             n_ev += len(cs)
+    # hand-built edge cases, full output byte-identical (C++ tool vs stand-in CLI)
+    hb = os.path.join(TMP, "hb")
+    rows = monitor_timeline(n_mon=300, drop_at=150)
+    rows[120] = row(1120, 11_200, "MONITOR", (None, 1.0, 0, 0, 0, 0))   # pad empty mid-MONITOR (NaN -> 0)
+    write_rec(hb, "grasp_1_medium_20261118-100000.csv", rows)
+    near = ",".join((["100"] * 20 + ["0"] * 44) * 3)
+    moved = ",".join((["140"] * 20 + ["0"] * 44) * 3)
+    fr = [f"{j},{10_000 + 50 * j},{1000 + 5 * j},1500,7," + (near if j < 30 else moved) for j in range(14, 60)]
+    write_rec(hb, "grasp_2_medium_20261118-100100.csv", monitor_timeline(n_mon=300), tof_lines=fr)   # 1st frame after settle
+    rows = monitor_timeline(n_mon=300)
+    for i in range(100, 130):
+        rows[i] = rows[i].replace(",MONITOR,", ",GRASP,")                     # MONITOR -> GRASP -> MONITOR
+    fr = [f"{j},{10_000 + 50 * j},{1000 + 5 * j},1500,{7 if j % 9 else 3}," + (near if j % 7 else moved)
+          for j in range(0, 60)]
+    write_rec(hb, "grasp_3_medium_20261118-100200.csv", rows, tof_lines=fr)
+    for f in sorted(os.listdir(hb)):
+        if f.endswith("_tof.csv"):
+            continue
+        tf = os.path.join(hb, f[:-4] + "_tof.csv")
+        for extra in ([], ["--param", "tofConfirmMs=0", "--param", "mode=3"], ["--force-active"]):
+            args = extra + ["--rows", os.path.join(hb, f)] + (["--tof", tf] if os.path.exists(tf) else [])
+            a = subprocess.run([se.CPP_TOOL] + args, capture_output=True, text=True)
+            b = subprocess.run([sys.executable, os.path.join(HERE, "replay_py.py")] + args, capture_output=True,
+                               text=True, check=True).stdout
+            assert a.returncode == 0, a.stderr
+            assert a.stdout == b, f"hand-built {f} {extra}: outputs differ"
+    # forced active on the manual synthetic recording
+    man = [r for r in recs if r.kind == "manual"][0]
+    c, p = cpp.run(man, {}, force_active=True), se.Replay("python").run(man, {}, force_active=True)
+    assert np.array_equal(c["slip"], p["slip"]) and np.array_equal(c["active"], p["active"]) and c["active"][-1]
     # byte-identical full output with the defaults (C++ tool vs stand-in CLI)
     for r in recs[:5]:
         args = ["--rows", r.path] + (["--tof", r.tof_path] if r.tof_path else [])
@@ -232,6 +262,9 @@ def test_end_to_end():
     patch = open(os.path.join(out, "config_patch.txt")).read()
     assert "slipFsrDropFrac=" in patch and "slipHoldoffMs=" in patch and "SYNTHETIC" in patch
     assert "SYNTHETIC DATA" in open(os.path.join(out, "report.md")).read()
+    with open(os.path.join(out, "results_all_sets.csv")) as fh:
+        head, first = fh.readline().strip().split(","), fh.readline().strip().split(",")
+    assert all(abs(float(first[head.index(k)]) - float(best[k])) < 1e-6 for k in se.PARAM_NAMES), "chosen != row 1"
     assert a["det_rate"] >= 0.80, a
     assert a["fa_per_min"] <= 0.5, a
     assert a["dist_rate"] <= 0.30, a

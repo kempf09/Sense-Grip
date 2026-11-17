@@ -415,6 +415,23 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
                    f"{sum(s.dists)}/{len(s.dists)}", len(s.fa_times), s.n_events, ", ".join(flags)])
     L += [table(["recording", "object", "trial", "s", "MONITOR s", "slips det.", "dist. with event", "quiet FA",
                  "events", "notes"], rr), ""]
+    if no_mon:
+        L += ["### Forced active (recordings without MONITOR)", "",
+              "Replayed with `--force-active` (detector on every row) and the chosen parameters. Not part of the "
+              "tuning metrics: the detector never runs outside MONITOR on the gripper, and in a manual recording the "
+              "fingers may move (jogging), which the ToF feature does not expect.", ""]
+        fr = []
+        for r in no_mon:
+            o = ev.replay.run(r, best, force_active=True)
+            saved = [e.scorable for e in r.episodes]
+            for e in r.episodes:
+                e.scorable = True
+            s_ = se.score(r, o, args.tol)
+            for e, v in zip(r.episodes, saved):
+                e.scorable = v
+            fr.append([r.name, r.trial, f"{sum(x[1] for x in s_.slips)}/{len(s_.slips)}",
+                       f"{sum(s_.dists)}/{len(s_.dists)}", len(s_.fa_times), s_.n_events])
+        L += [table(["recording", "trial", "slips detected", "dist. with event", "quiet FA", "events"], fr), ""]
     dw = [(r.name, w) for r in recs for w in r.data_warnings()] + \
          [(n, w) for n, ws in sorted(rwarn.items()) for w in dict.fromkeys(ws)]
     if dw:
@@ -463,6 +480,17 @@ def main(argv=None):
         for r in recs:
             r.arrays()
     defaults = replay.defaults()
+    ok = []
+    for r in recs:                               # files the replay tool rejects (malformed rows) are skipped, listed
+        try:
+            replay.run(r, defaults)
+            ok.append(r)
+        except RuntimeError as e:
+            sgdata.SKIPPED.append((r.name, str(e)[:200]))
+    recs = ok
+    _RECS = recs
+    if not recs:
+        sys.exit("no recording could be replayed")
     grid = QUICK_GRID if args.quick else FULL_GRID
     global _GRID
     _GRID = grid
