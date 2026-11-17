@@ -70,8 +70,12 @@ def test_parsing():
               tof_lines=[f"0,10005,1001,1500,7," + ",".join(["100"] * 192)])
     with open(os.path.join(d, "notes.csv"), "w") as fh:
         fh.write("file,object,trial,notes\nmanual_8_20261118-101900.csv,Mug,C pull,manual, jogged\n")
+    shutil.copy(os.path.join(d, "grasp_7_medium_20261118-101502.csv"), os.path.join(d, "grasp_7_medium_20261118-101502 (1).csv"))
+    with open(os.path.join(d, "grasp_9_small_20261118-102000.csv"), "w") as fh:
+        fh.write("# empty download\n")
     recs = sgdata.load_dataset(d)
     assert [r.name for r in recs] == ["grasp_7_medium_20261118-101502.csv", "manual_8_20261118-101900.csv"]
+    assert [f for f, _ in sgdata.SKIPPED] == ["grasp_7_medium_20261118-101502 (1).csv", "grasp_9_small_20261118-102000.csv"]
     g, m = recs
     assert len(g.rows) == 105, len(g.rows)                       # garbage line dropped
     assert g.gap_rows == 5 and g.gap_flag
