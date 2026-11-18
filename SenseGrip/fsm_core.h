@@ -42,6 +42,10 @@ constexpr int32_t OPEN_SETTLE_COUNTS = 100;
 // Slow close and GRASP move at 15 / 3-10 speed units (~50 counts/s each): their timeout is the
 // configured one, or 1.5 x the time to cover the distance left to the close limit + 2 s if longer.
 constexpr uint32_t COUNTS_PER_S_PER_SPEED = 50;
+// GRASP: the jaw made no progress (< 5 counts) for this long with at least minActiveFsr pads in
+// contact -> it is at its current limit and cannot squeeze harder: hold (MONITOR) instead of
+// waiting for a target force it cannot reach (hardware: bowl, 3 pads, avg 3.1 N vs 4 N).
+constexpr uint32_t GRASP_STALL_MS = 1000;
 
 struct FsmInputs {
   uint32_t nowMs; Cmd cmd;

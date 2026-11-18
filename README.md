@@ -164,6 +164,9 @@ jaw cannot be back-driven), the limits are cleared, Open is required again, and 
   gets the full Pre-touch timeout (on the measured sweep a 25 mm tube needs ~2.5 s + ~7 s).
   With Approach only and no pre-touch position to move to, it stops right away in MONITOR.
 - GRASP: closing at the class grasp speed until the average force reaches the class target force on enough channels.
+  If the jaw stalls at its current limit for 1 s with enough pads in contact, it holds there
+  (MONITOR, reason "grasp held: jaw stalled at max current, avg X N on N pads (target Y N)"):
+  the motor cannot squeeze harder and the non-back-drivable jaw keeps the grip.
 - MONITOR: holding the object. Nothing happens automatically; press Open to release.
 - OPEN: moving back to the OPEN zero. On arrival (within Open tolerance, or stopped for 0.5 s within
   100 counts: the servo can stop a little short) IDLE and disarmed. The timeout message says how far it stopped.

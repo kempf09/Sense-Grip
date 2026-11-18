@@ -926,7 +926,8 @@ TEST(fsm_tighten_failure_returns_to_monitor_not_fault) {
   CHECK(std::strstr(f.reason(), "tighten failed") != nullptr);
   // timeout during tighten also returns to MONITOR
   in.position = 8000; in.slipEvent = true; f.step(in); CHECK(f.state() == State::GRASP); f.takeTightenEvent();
-  in.slipEvent = false; in.nowMs += (19102 - 8000) * 1500 / (10 * 50) + 2000; f.step(in);
+  in.slipEvent = false; in.channelsInContact = 1;           // too few pads: the stall rule does not end it
+  in.nowMs += (19102 - 8000) * 1500 / (10 * 50) + 2000; f.step(in);
   CHECK(f.state() == State::MONITOR);
   CHECK(f.takeTightenEvent() == TightenEvent::FAILED);
 }
@@ -1042,4 +1043,34 @@ TEST(fsm_tightening_flag_cleared_on_estop_and_force_limit) {
   in = held(2000); in.slipEvent = true; in.tightenEnabled = true; g.step(in);
   in.slipEvent = false; in.cmd = Cmd::ESTOP; g.step(in);
   CHECK(g.state() == State::FAULT); CHECK(!g.tightening());
+}
+
+// Hardware 2026-11-18 (grasp_9, bowl, large): the jaw stalled at the current limit with three
+// pads in contact (1.9 / 3.05 / 4.4 N, avg 3.1 N < 4 N target) and GRASP never ended.
+TEST(fsm_grasp_stalled_with_contacts_goes_monitor) {
+  Fsm f = graspFsm(1000);                                    // GRASP at position 8000
+  FsmInputs in = ready(1000); in.anyFingerContact = true; in.position = 9725;
+  in.avgContactForce = 0.8f; in.channelsInContact = 3;     // below the test plan's 1.0 N target
+  for (uint32_t s = 0; s < GRASP_STALL_MS / 10 - 3; s++) { in.fsrSeq = 900 + s; in.nowMs += 10; f.step(in); }
+  CHECK(f.state() == State::GRASP);                          // not stalled long enough yet
+  for (uint32_t s = 0; s < 6; s++) { in.fsrSeq = 1990 + s; in.nowMs += 10; f.step(in); }
+  CHECK(f.state() == State::MONITOR);
+  CHECK(std::strstr(f.reason(), "stalled") != nullptr);
+}
+TEST(fsm_grasp_stalled_without_enough_contacts_keeps_grasp) {
+  Fsm f = graspFsm(1000);
+  FsmInputs in = ready(1000); in.anyFingerContact = true; in.position = 9000;
+  in.avgContactForce = 3.0f; in.channelsInContact = 1;      // minActiveFsr = 2
+  for (uint32_t s = 0; s < 3 * GRASP_STALL_MS / 10; s++) { in.fsrSeq = 900 + s; in.nowMs += 10; f.step(in); }
+  CHECK(f.state() == State::GRASP);
+}
+
+TEST(fsm_tighten_stalled_counts_as_done) {
+  Fsm f = monitorFsm(1000);
+  FsmInputs in = held(2000); in.slipEvent = true; in.tightenEnabled = true; f.step(in);
+  CHECK(f.state() == State::GRASP); f.takeTightenEvent();
+  in.slipEvent = false;
+  for (uint32_t s = 0; s < GRASP_STALL_MS / 10 + 3; s++) { in.fsrSeq = 3000 + s; in.nowMs += 10; f.step(in); }
+  CHECK(f.state() == State::MONITOR);
+  CHECK(f.takeTightenEvent() == TightenEvent::DONE);
 }

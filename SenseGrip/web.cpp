@@ -23,7 +23,7 @@
 #include "log_core.h"
 
 // Shown in the dashboard header and /api/status: tells which build is running.
-static const char FW_BUILD[] = "phase4-tofrs " __DATE__ " " __TIME__;
+static const char FW_BUILD[] = "phase4-stall " __DATE__ " " __TIME__;
 static const char* resetReasonText() {
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON: return "power-on";

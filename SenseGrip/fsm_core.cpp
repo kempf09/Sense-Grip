@@ -101,6 +101,15 @@ MotorAction Fsm::run(const FsmInputs& in) {
         heldByGrasp_ = true;
         return enter(State::MONITOR, "grasp force reached");
       }
+      if (std::abs((long)in.position - (long)progPos_) >= 5) { progPos_ = in.position; progMs_ = nowMs_; }
+      if ((uint32_t)(nowMs_ - progMs_) >= GRASP_STALL_MS && in.channelsInContact >= cfg_.minActiveFsr) {
+        std::snprintf(scratch_, sizeof scratch_, "%s: jaw stalled at max current, avg %.1f N on %u pads (target %.1f N)",
+                      tightening_ ? "tighten done" : "grasp held", (double)in.avgContactForce, (unsigned)in.channelsInContact,
+                      (double)plan_.prof.forceN);
+        if (tightening_) return tightenEnd(true, scratch_);
+        heldByGrasp_ = true;
+        return enter(State::MONITOR, scratch_);
+      }
       if (pastCloseLimit(in.position))
         return tightening_ ? tightenEnd(false, "tighten failed: close limit reached") : enter(State::FAULT, "target force not reached before close limit");
       if (timedOut(in, stepTimeoutMs_)) return tightening_ ? tightenEnd(false, "tighten failed: timeout") : enter(State::FAULT, "GRASP timeout");
@@ -167,6 +176,7 @@ MotorAction Fsm::enter(State s, const char* why) {
       graspCount_ = 0;
       graspSeq_ = fsrSeq_;                       // count only samples newer than the contact one
       stepTimeoutMs_ = travelTimeoutMs(cfg_.graspTimeoutMs, plan_.prof.graspSpeed);
+      progPos_ = lastPos_; progMs_ = nowMs_;
       return act(MotorAction::RUN, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
     case State::MONITOR:
       return act(MotorAction::HOLD, plan_.prof.graspSpeed, 0, plan_.prof.maxCurrent);
