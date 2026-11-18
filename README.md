@@ -304,6 +304,7 @@ All under the dashboard host. POST unless noted.
 | GET `/api/log/tof?from=<seq>&max=<n>` | Raw SEN0628 frames as CSV (same headers) |
 | `/api/log/mark?type=pull\|twist\|slide\|other\|end` | Operator mark in the recording |
 | `/api/fsm/tighten` | Tighten once (MONITOR only) |
+| `/api/tof/restart?sensor=1\|2\|3\|all[&bus=1]` | Re-initialise SEN0628 sensor(s); `bus=1` frees the I2C bus first |
 | GET `/api/log?from=<seq>&max=<n>` | Logged rows as CSV (headers `X-Log-Next`, `X-Log-Oldest`, `X-Log-Boot`) |
 | `/api/sweep/opening?i=N&mm=X` | Edit curve point N (no `mm`: undo that point; `i=-1`: clear all edits) |
 | `/api/servo/clearLimits` | Forget OPEN zero and close limit |

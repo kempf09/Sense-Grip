@@ -23,7 +23,7 @@
 #include "log_core.h"
 
 // Shown in the dashboard header and /api/status: tells which build is running.
-static const char FW_BUILD[] = "phase4-slip " __DATE__ " " __TIME__;
+static const char FW_BUILD[] = "phase4-tofrs " __DATE__ " " __TIME__;
 static const char* resetReasonText() {
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON: return "power-on";
@@ -273,6 +273,8 @@ static void handleTof() {
     o.put(",\"initFailStage\":%u,\"initFails\":%lu,\"lastRc\":%u,\"readUsMax\":%lu,\"dropouts\":%lu,\"dropoutsMoving\":%lu",
           (unsigned)s.initFailStage, (unsigned long)s.initFails, (unsigned)s.lastRc,
           (unsigned long)s.readUsMax, (unsigned long)s.dropouts, (unsigned long)s.dropoutsMoving);
+    o.put(",\"restarts\":%lu,\"restartStage\":%u,\"unchangedMs\":", (unsigned long)s.restarts, (unsigned)s.restartStage);
+    if (s.online && s.lastChangeMs) o.put("%lu", (unsigned long)(now - s.lastChangeMs)); else o.put("null");
     o.put(",\"ok\":%lu,\"err\":%lu,\"ageMs\":", (unsigned long)s.ok, (unsigned long)s.err);
     if (s.online) o.put("%lu", (unsigned long)(now - s.lastGoodMs)); else o.put("null");
     o.put(",\"minMm\":");
@@ -612,6 +614,18 @@ void webBegin() {
   });
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/tof", HTTP_GET, handleTof);
+  // POST /api/tof/restart?sensor=1|2|3|all[&bus=1]: re-initialise SEN0628 sensor(s); bus=1 also
+  // frees the I2C bus first (all sensors).
+  server.on("/api/tof/restart", HTTP_POST, [] {
+    const String sn = server.hasArg("sensor") ? server.arg("sensor") : String("all");
+    uint8_t mask = 0;
+    if (sn == "all") mask = 0x7;
+    else if (sn == "1" || sn == "2" || sn == "3") mask = (uint8_t)(1u << (sn.toInt() - 1));
+    else { sendError(400, "sensor must be 1, 2, 3 or all"); return; }
+    const bool bus = server.hasArg("bus") && server.arg("bus") == "1";
+    tofRequestRestart(bus ? 0x7 : mask, bus);
+    sendJson(200, "{\"ok\":true,\"queued\":true}");
+  });
   server.on("/api/object/override", HTTP_POST, handleOverride);
   server.on("/api/sweep/opening", HTTP_POST, handleOpeningEdit);
   server.on("/api/log", HTTP_GET, handleLogGet);

@@ -31,6 +31,11 @@ frames are not stored). Note the number. If the Recordings panel says "FRAME LOG
 "present" yet: SEN0628 tab → Config → **Detect distance mm** → 150, Save, try again. Small
 centred objects sit ~85–100 mm from the sensors; the default 80 mm can miss them.
 
+**If a SEN0628 locks** (the Combined tab's ToF panel shows "S2 frozen 5 s" or "offline"):
+press **Restart S2** (or the sensor shown); if several are stuck, **All + I2C bus**. Press **O**
+then **E** around the restart so the recording shows it. If a restart keeps failing, the sensor
+needs a power cycle.
+
 ## 1. Mark keys (dashboard, Combined tab — work anywhere on the page)
 
 | Key | Mark | Press it… |

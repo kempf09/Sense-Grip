@@ -20,6 +20,27 @@ TofSnapshot gSnap = {};
 uint16_t gDetectMm = 80;
 uint16_t gHoldMs = 200;
 uint64_t gMask[3] = {~0ULL, ~0ULL, ~0ULL};
+uint8_t gRestartMask = 0;     // operator restart request (tofRequestRestart), taken by the tof task
+bool gBusRecover = false;
+
+// Frees an I2C bus held by a slave: up to 9 SCL pulses until SDA is released, then a STOP.
+void busRecover() {
+  Wire.end();
+  pinMode(I2C_SDA, INPUT_PULLUP);
+  pinMode(I2C_SCL, OUTPUT_OPEN_DRAIN);
+  digitalWrite(I2C_SCL, HIGH);
+  delayMicroseconds(10);
+  for (int k = 0; k < 9 && digitalRead(I2C_SDA) == LOW; k++) {
+    digitalWrite(I2C_SCL, LOW); delayMicroseconds(10);
+    digitalWrite(I2C_SCL, HIGH); delayMicroseconds(10);
+  }
+  pinMode(I2C_SDA, OUTPUT_OPEN_DRAIN);                     // STOP: SDA low -> high while SCL high
+  digitalWrite(I2C_SDA, LOW); delayMicroseconds(10);
+  digitalWrite(I2C_SCL, HIGH); delayMicroseconds(10);
+  digitalWrite(I2C_SDA, HIGH); delayMicroseconds(10);
+  Wire.begin(I2C_SDA, I2C_SCL, I2C_HZ);
+  Wire.setTimeOut(120);
+}
 
 constexpr uint32_t STALE_MS = 1000;   // no good frame for this long -> shown offline
 
@@ -42,6 +63,13 @@ void tofSetDetect(uint16_t mm, uint16_t holdMs, const uint64_t mask[3]) {
 }
 
 TofSnapshot tofGet() { return snap(gSnap); }
+
+void tofRequestRestart(uint8_t mask, bool recover) {
+  portENTER_CRITICAL(&gMux);
+  gRestartMask |= (uint8_t)(mask & 0x7);
+  gBusRecover = gBusRecover || recover;
+  portEXIT_CRITICAL(&gMux);
+}
 
 // Same behaviour as Release 3.0.3 (which was more stable on this hardware): initialise
 // once, read through errors, never re-initialise a sensor that has started. Only a sensor
@@ -77,6 +105,23 @@ void tofTask(void*) {
   for (uint8_t i = 0; i < TOF_COUNT; i++) { tryInit(i); vTaskDelay(1); }
 
   for (;;) {
+    {   // operator restart request (dashboard button)
+      uint8_t rm; bool rec;
+      portENTER_CRITICAL(&gMux);
+      rm = gRestartMask; rec = gBusRecover; gRestartMask = 0; gBusRecover = false;
+      portEXIT_CRITICAL(&gMux);
+      if (rec) { busRecover(); vTaskDelay(pdMS_TO_TICKS(20)); }
+      for (uint8_t i = 0; i < TOF_COUNT; i++) {
+        if (!((rm >> i) & 1)) continue;
+        tryInit(i);
+        portENTER_CRITICAL(&gMux);
+        gSnap.s[i].restarts++;
+        gSnap.s[i].restartStage = gSnap.s[i].initFailStage;
+        gSnap.s[i].lastChangeMs = millis();                // restart the frozen timer
+        portEXIT_CRITICAL(&gMux);
+        vTaskDelay(1);
+      }
+    }
     for (uint8_t i = 0; i < TOF_COUNT; i++) {
       uint32_t now = millis();
       if (!inited[i]) {
@@ -97,6 +142,7 @@ void tofTask(void*) {
         TofSensor& s = gSnap.s[i];
         s.lastRc = rc;
         if (rc == 0) {
+          if (memcmp(s.mm, values, sizeof(values)) != 0 || !s.lastChangeMs) s.lastChangeMs = now;
           memcpy(s.mm, values, sizeof(values));
           s.minMm = mn;
           s.lastGoodMs = now;

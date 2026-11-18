@@ -87,7 +87,8 @@ select{width:auto;min-width:150px;display:block}
    <div class="panel"><h2>Object</h2><div id="cObj" class="small">-</div>
     <div id="cSlip" class="small" style="margin-top:6px">-</div>
     <div class="btns" style="margin-top:6px"><button class="b" id="bTighten" disabled>Tighten</button></div></div>
-   <div class="panel"><h2>ToF (SEN0628)</h2><div class="grid3" id="cHm"></div></div>
+   <div class="panel"><h2>ToF (SEN0628)</h2><div class="grid3" id="cHm"></div>
+    <div class="row" style="margin-top:6px"><span class="small">Restart:</span><button class="b" data-tofrs="1">S1</button><button class="b" data-tofrs="2">S2</button><button class="b" data-tofrs="3">S3</button><button class="b" data-tofrs="all">All</button><button class="b" data-tofrs="bus">All + I2C bus</button><span class="small" id="tofFrozen"></span></div></div>
   </div>
  </div>
 </section>
@@ -143,7 +144,9 @@ select{width:auto;min-width:150px;display:block}
  <div class="panel"><div class="grid3" id="tHm"></div>
   <p class="small">Click a cell to toggle it in the zone mask (hatched = ignored). Then Save mask.</p>
   <button class="b pri" id="maskSave">Save mask</button></div>
- <div class="panel"><h2>Health</h2><table id="tofTbl"></table></div>
+ <div class="panel"><h2>Health</h2><table id="tofTbl"></table>
+  <div class="row" style="margin-top:6px"><button class="b" data-tofrs="all">Restart all</button><button class="b" data-tofrs="bus">Restart all + reset I2C bus</button></div>
+  <p class="small">A sensor that stops updating shows "frozen" (frame unchanged for more than 2 s while online) or goes offline. Restart re-initialises it; "+ I2C bus" also frees a bus held by a sensor (use it when several sensors stop at once). If a restart fails repeatedly, the sensor needs a power cycle.</p></div>
  <div class="panel"><h2>Config</h2><div class="cfg" id="tofCfg"></div><button class="b pri" id="tofSave">Save</button></div>
  <div class="panel"><h2>Object classification</h2>
   <div id="objLive" class="small">-</div>
@@ -298,12 +301,16 @@ function drawTof(){
   }
   if(tab==='tof'&&T&&T.sensors){
     var STG=['-','no I2C ACK','begin()','setRangingMode()'];
-    var h='<tr><th>Sensor</th><th>Online</th><th>Init</th><th>ok</th><th>err</th><th>last rc</th><th>age ms</th><th>max read ms</th><th>dropouts (moving)</th><th>init fails (last stage)</th></tr>';
-    T.sensors.forEach(function(s,k){h+='<tr><td>S'+(k+1)+'</td><td>'+(s.online?'yes':'no')+'</td><td>'+(s.initialized?'yes':'NO')+'</td><td>'+s.ok+'</td><td>'+s.err+'</td><td>'+s.lastRc+'</td><td>'+(s.ageMs===null?'-':s.ageMs)+'</td><td>'+fx(s.readUsMax/1000,1)+'</td><td>'+s.dropouts+' ('+s.dropoutsMoving+')</td><td>'+s.initFails+' ('+(STG[s.initFailStage]||s.initFailStage)+')</td></tr>'});
+    var h='<tr><th>Sensor</th><th>Online</th><th>Init</th><th>ok</th><th>err</th><th>last rc</th><th>age ms</th><th>unchanged s</th><th>max read ms</th><th>dropouts (moving)</th><th>init fails (last stage)</th><th>restarts (last)</th><th></th></tr>';
+    T.sensors.forEach(function(s,k){var fr=s.unchangedMs!==null&&s.unchangedMs!==undefined&&s.unchangedMs>2000;
+      h+='<tr><td>S'+(k+1)+'</td><td>'+(s.online?'yes':'<b>no</b>')+'</td><td>'+(s.initialized?'yes':'NO')+'</td><td>'+s.ok+'</td><td>'+s.err+'</td><td>'+s.lastRc+'</td><td>'+(s.ageMs===null?'-':s.ageMs)+'</td><td>'+(s.unchangedMs===null||s.unchangedMs===undefined?'-':(fr?'<b>':'')+fx(s.unchangedMs/1000,1)+(fr?' frozen</b>':''))+'</td><td>'+fx(s.readUsMax/1000,1)+'</td><td>'+s.dropouts+' ('+s.dropoutsMoving+')</td><td>'+s.initFails+' ('+(STG[s.initFailStage]||s.initFailStage)+')</td><td>'+(s.restarts||0)+(s.restarts?' ('+(s.restartStage?'FAILED: '+(STG[s.restartStage]||s.restartStage):'ok')+')':'')+'</td>'+
+        '<td><button class="b" data-tofrs="'+(k+1)+'">Restart</button></td></tr>'});
     var d=S.diag||{};
-    h+='<tr><td colspan="10" class="small">Control loop max '+fx((d.loopMaxUs||0)/1000,1)+' ms (5 s) &middot; FSR pass max '+fx((d.fsrSampleUsMax||0)/1000,1)+' ms &middot; servo bus errors '+(d.servoBusErrors||0)+' &middot; position jumps '+(d.posJumps||0)+'</td></tr>';
+    h+='<tr><td colspan="13" class="small">Control loop max '+fx((d.loopMaxUs||0)/1000,1)+' ms (5 s) &middot; FSR pass max '+fx((d.fsrSampleUsMax||0)/1000,1)+' ms &middot; servo bus errors '+(d.servoBusErrors||0)+' &middot; position jumps '+(d.posJumps||0)+'</td></tr>';
     $('tofTbl').innerHTML=h;
   }
+  if(T&&T.sensors){var bad=[];T.sensors.forEach(function(s,k){if(!s.online)bad.push('S'+(k+1)+' offline');else if(s.unchangedMs>2000)bad.push('S'+(k+1)+' frozen '+fx(s.unchangedMs/1000,0)+' s')});
+    var e=$('tofFrozen');if(e){e.textContent=bad.join(', ');e.style.color=bad.length?'#ff6b6b':''}}
 }
 
 /* ---------- config forms ---------- */
@@ -358,6 +365,10 @@ function saveForm(id,extra){
 $('svSave').onclick=function(){saveForm('svCfg')};
 $('swSave').onclick=function(){saveForm('swCfg')};
 $('objSave').onclick=function(){saveForm('objCfg')};
+// SEN0628 restart buttons (also inside the Health table, which is re-rendered: delegated click)
+document.addEventListener('click',function(ev){var b=ev.target&&ev.target.closest&&ev.target.closest('[data-tofrs]');if(!b)return;
+  var v=b.dataset.tofrs,u=v==='bus'?'/api/tof/restart?sensor=all&bus=1':'/api/tof/restart?sensor='+v;
+  post(u).then(function(j){if(j)toast('SEN0628 restart: '+(v==='bus'?'all + I2C bus':v==='all'?'all':'S'+v))})});
 $('slipSave').onclick=function(){saveForm('slipCfg')};
 $('bTighten').onclick=function(){post('/api/fsm/tighten')};
 $('objOv').onchange=function(){post('/api/object/override?cls='+this.value)};
