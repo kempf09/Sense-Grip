@@ -7,7 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -103,13 +103,15 @@ def parse_replay_csv(text: str, rec: sgdata.Recording | None = None) -> dict:
 class RecScore:
     name: str
     obj: str
-    slips: list            # (type, detected bool, latency_ms or None, t_mark)
+    slips: list            # (type, detected bool, latency_ms or None, t_mark, reason of the first event)
     dists: list            # triggered bool
     quiet_s: float
     fa_times: list         # quiet false-alarm event times (ms)
     post_slip_fa: int      # quiet false alarms within 10 s after a slip window
     n_events: int
     unscorable_events: int
+    trial: str = ""        # trial label from the notes file
+    dist_reasons: list = field(default_factory=list)   # reason of the first event per triggered disturbance
 
 
 def score(rec: sgdata.Recording, out: dict, tol_s: float = sgdata.TOL_S) -> RecScore:
@@ -120,16 +122,24 @@ def score(rec: sgdata.Recording, out: dict, tol_s: float = sgdata.TOL_S) -> RecS
     in_any = np.zeros(len(t), bool)
     for lo, hi in wins:
         in_any |= (t >= lo) & (t <= hi)
-    slips, dists, unsc = [], [], 0
+    slips, dists, dreasons, unsc = [], [], [], 0
+    reason = out.get("reason")
+    if reason is None:                       # hand-built outputs in tests may omit it
+        reason = np.array([""] * len(t), object)
+    ev_r = reason[out["slip"]]
     for e, (lo, hi) in zip(eps, wins):
-        hit = ev_t[(ev_t >= lo) & (ev_t <= hi)]
+        m = (ev_t >= lo) & (ev_t <= hi)
+        hit = ev_t[m]
         if not e.scorable:
             unsc += len(hit)
             continue
+        first_r = str(ev_r[m][0]) if len(hit) else ""
         if e.kind == "slip":
-            slips.append((e.type, bool(len(hit)), int(hit[0] - e.t_mark) if len(hit) else None, e.t_mark))
+            slips.append((e.type, bool(len(hit)), int(hit[0] - e.t_mark) if len(hit) else None, e.t_mark, first_r))
         else:
             dists.append(bool(len(hit)))
+            if len(hit):
+                dreasons.append(first_r)
     dtm = np.minimum(np.diff(t, append=t[-1] + 10 if len(t) else 0), 20) if len(t) else np.zeros(0)
     quiet = out["active"] & ~in_any
     quiet_s = float(dtm[quiet].sum()) / 1000.0
@@ -137,7 +147,33 @@ def score(rec: sgdata.Recording, out: dict, tol_s: float = sgdata.TOL_S) -> RecS
     fa_t = t[fa_mask].tolist()
     slip_wins = [w for e, w in zip(eps, wins) if e.kind == "slip"]
     post = sum(1 for ft in fa_t if any(hi < ft <= hi + 10000 for _, hi in slip_wins))
-    return RecScore(rec.name, rec.object, slips, dists, quiet_s, fa_t, post, int(out["slip"].sum()), unsc)
+    return RecScore(rec.name, rec.object, slips, dists, quiet_s, fa_t, post, int(out["slip"].sum()), unsc,
+                    trial=rec.trial or "", dist_reasons=dreasons)
+
+
+def by_feature(scores: list[RecScore]) -> dict:
+    """Which feature fired first: per slip type (and 'disturbance'), counts of fsr / tof / fsr+tof / missed."""
+    out = {}
+    for r in scores:
+        for s in r.slips:
+            d = out.setdefault(s[0], {"fsr": 0, "tof": 0, "fsr+tof": 0, "missed": 0})
+            d[s[4] if s[1] else "missed"] = d.get(s[4] if s[1] else "missed", 0) + 1
+        for rs in r.dist_reasons:
+            d = out.setdefault("disturbance (triggered)", {"fsr": 0, "tof": 0, "fsr+tof": 0, "missed": 0})
+            d[rs] = d.get(rs, 0) + 1
+    return out
+
+
+def by_trial(scores: list[RecScore]) -> dict:
+    """Slip detection per trial label from the notes (e.g. 'C pull' vs 'C2 pull from outside the view')."""
+    out = {}
+    for r in scores:
+        for s in r.slips:
+            d = out.setdefault(r.trial or "(no notes)", {"n_slip": 0, "n_det": 0, "tof_only": 0})
+            d["n_slip"] += 1
+            d["n_det"] += int(s[1])
+            d["tof_only"] += int(s[1] and s[4] == "tof")
+    return out
 
 
 def aggregate(scores: list[RecScore]) -> dict:

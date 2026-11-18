@@ -358,6 +358,18 @@ def write_outputs(args, recs, ev, defaults, best, folds, A, B, cands_all, runtim
     L += [table(["type", "chosen detected", "chosen latency median ms", "defaults detected"],
                 [[t, f"{v['n_det']}/{v['n_slip']} ({fmt(v['det_rate'], pct=True)})", fmt(v["lat_median_ms"], 0),
                   f"{bd[t]['n_det']}/{bd[t]['n_slip']}" if t in bd else "–"] for t, v in bt.items()]), ""]
+    bf = se.by_feature(ev.scores(best, idx_all))
+    L += ["### Which feature caught it (chosen parameters)", "",
+          "A slip pulled by hand also brings the hand into the SEN0628 view. If hand-in-view trials are caught "
+          "only by 'tof' while the hand-free pulls (C2) and 'hand grips, object stays' disturbances (B2) "
+          "behave differently, the ToF feature may be detecting the hand, not the object.", "",
+          table(["slip type", "fsr", "tof", "fsr+tof", "missed"],
+                [[k, v.get("fsr", 0), v.get("tof", 0), v.get("fsr+tof", 0), v.get("missed", 0)] for k, v in bf.items()]), ""]
+    bt2 = se.by_trial(ev.scores(best, idx_all))
+    if bt2:
+        L += ["### Per trial (notes file)", "",
+              table(["trial", "slips detected", "of which by ToF only"],
+                    [[k, f"{v['n_det']}/{v['n_slip']}", v["tof_only"]] for k, v in sorted(bt2.items())]), ""]
     L += ["## Leave-one-object-out", "",
           "Each row: parameters chosen with the same rule on all *other* objects (own shortlist, no access to the "
           "held-out object), then evaluated on the held-out object.", ""]
