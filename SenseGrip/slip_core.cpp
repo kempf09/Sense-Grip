@@ -77,10 +77,16 @@ SlipOut slipStep(SlipState& s, const SlipParams& p, const SlipInput& in) {
     if (in.objValid) { s.range0 = in.rangeMm; s.height0 = in.heightMm; for (int k = 0; k < 3; k++) s.rad0[k] = in.rad[k]; }
   }
   o.armed = true;
+  if (s.lost) { o.lost = true; return o; }
   // After an event the object may rest in a new place / at a lower force: once the holdoff is
   // over, that becomes the new baseline (otherwise it would re-fire every holdoff).
   if (s.rebasePending && (int32_t)(t - s.rebaseAt) >= 0) {
     s.rebasePending = false;
+    // No pad carries load any more: the object came out of the hand. One event was enough; the
+    // empty gripper (hand moving in view) must not keep warning.
+    bool loaded = false;
+    for (int i = 0; i < 6; i++) if (in.force[i] >= p.fsrMinForceN) loaded = true;   // NaN never >=
+    if (!loaded) { s.lost = true; o.lost = true; return o; }
     for (int i = 0; i < 6; i++) s.base[i] = in.force[i];
     if (s.haveFrame && in.frame) { std::memcpy(s.frame0, in.frame, sizeof s.frame0); s.valid0 = in.frameValid; s.baseFrame = true; }
     s.obj0 = in.objValid;

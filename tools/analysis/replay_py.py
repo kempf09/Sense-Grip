@@ -31,7 +31,7 @@ test_pipeline.py):
     Event on a candidate row unless inside holdoffMs of the previous event. reason (printed only on event rows) =
     the row's flags; mode 3 always fsr+tof.
   * re-baseline after an event: at the first row with t >= event t + holdoffMs the baseline is taken again and the
-    force history restarts at that row (forces,
+    force history restarts at that row; if no pad is loaded then (object lost) the detector stays silent (forces,
     the latest frame if any, the object measurement); FSR/ToF confirmation runs, the zone count and the "flag seen"
     state for mode 3 restart.
   * inactive rows print `0,0.000,0,0,,0,0,`; fsr_drop %.3f, tof_disp_mm %.1f or empty.
@@ -251,6 +251,13 @@ def run(arr: dict, params: dict | None = None, force_active: bool = False) -> di
                 out["reason"][a + k + s + r] = f["reason"][r]
             s += nxt
             if r >= 0 and s < len(R):                 # re-baseline: frame only if one exists at that row
+                fr = F[k + s]                         # object lost: no pad loaded -> silent (armed, zeros) to the end
+                if not (np.nan_to_num(fr, nan=-1.0) >= np.float32(P["fsrMinForceN"])).any():
+                    rest = slice(a + k + s, e)
+                    out["active"][rest] = True
+                    out["fsr_drop"][rest] = 0; out["fsr_flag"][rest] = False
+                    out["tof_zones"][rest] = 0; out["tof_disp"][rest] = np.nan; out["tof_flag"][rest] = False
+                    break
                 mx = wmax(k + s)                      # force history restarts at the re-baseline row
                 Ls = arr["last_frame"][a + k + s]
                 if Ls >= 0:

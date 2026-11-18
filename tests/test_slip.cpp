@@ -206,3 +206,20 @@ TEST(slip_rebaseline_clears_force_history) {
   CHECK_EQ(events, 1);
   CHECK(first < 1100);
 }
+// Hardware 2026-11-18 (grasp_4, tube pulled out): after the object came free the ToF kept firing
+// on the empty gripper. When no pad carries load at the re-baseline, the object is lost: no more
+// events until the next hold.
+TEST(slip_object_lost_stops_events) {
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
+  uint32_t t = 0;
+  for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
+  int events = 0; SlipOut o{};
+  for (; t < 12000; t += 10) {
+    const float f = t < 1100 ? 2.0f : 0.0f;               // object pulled out
+    if (t >= 1100) for (int z = 0; z < 30; z++) FR[(t / 300) % 3][z] = (uint16_t)(200 + (t / 50) % 80);   // hand moving
+    SlipInput x = in(t, f); x.frameNew = (t % 70) == 0;
+    o = slipStep(st, p, x); if (o.slip) events++;
+  }
+  CHECK_EQ(events, 1);
+  CHECK(o.lost);
+}

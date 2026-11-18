@@ -44,6 +44,7 @@ struct SlipOut {
   bool tofFlag;
   bool slip;           // an event fires on this step
   uint8_t reason;      // SLIP_FSR | SLIP_TOF of this step's flags
+  bool lost;           // object gone (no pad loaded at the re-baseline after an event): no more events this hold
 };
 
 constexpr int SLIP_HIST = 64;    // force history entries (10 ms steps -> 640 ms)
@@ -56,6 +57,7 @@ struct SlipState {
   uint16_t frame0[3][64]; uint8_t valid0;
   bool tofOver; uint32_t tofSince; int tofZones;
   bool rebasePending; uint32_t rebaseAt;     // re-baseline when the holdoff after an event ends
+  bool lost;                                 // object gone: detector silent until the next hold
   bool obj0; float range0, height0, rad0[3];
 };
 void slipReset(SlipState& s);
