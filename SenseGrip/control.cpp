@@ -922,8 +922,16 @@ void slipUpdate(Ctl& c, uint32_t now) {
 // chosen from these after the hardware recordings.
 void tofLogStep(Ctl& c, uint32_t now) {
   const TofSnapshot t = tofGet();
+  // A read returns the sensor's latest frame whether or not it is a new measurement (the tof task
+  // reads faster than the sensors measure). Only a sensor whose 64 values (or online state)
+  // changed makes a new record: a real new measurement always differs somewhat.
   bool fresh = false;
-  for (int s = 0; s < 3; s++) if (t.s[s].ok != c.logTofOk[s]) { fresh = true; c.logTofOk[s] = t.s[s].ok; }
+  for (int s = 0; s < 3; s++) {
+    if (t.s[s].ok == c.logTofOk[s]) continue;
+    c.logTofOk[s] = t.s[s].ok;
+    const bool onl = t.s[s].online, wasOn = (c.slipFrameValid >> s) & 1;
+    if (!c.slipHaveFrame || onl != wasOn || memcmp(t.s[s].mm, c.slipFrame[s], sizeof(c.slipFrame[s])) != 0) fresh = true;
+  }
   if (!fresh) return;
   static TofFrameRec f;
   f.tMs = now; f.rowSeq = gLog.next; f.pos = servoGet().fb.position; f.valid = 0;

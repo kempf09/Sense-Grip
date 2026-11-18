@@ -19,7 +19,8 @@ files, so what is not recorded cannot be tuned.
 6. Check the Recordings panel shows **≈100 rows/s**.
 7. **Test grasp first:** grasp any object, press **P** then **E** while it is held, Open.
    Download that recording: the `.csv` must contain `mark:pull` and `mark:end` in the `event`
-   column, and the `_tof.csv` must have frames. If the Recordings panel says "FRAME LOG
+   column, and the `_tof.csv` must have frames. The recording list shows **frames/s**: expect
+   roughly 20–45 (three sensors). Note the number. If the Recordings panel says "FRAME LOG
    UNAVAILABLE", stop and report it (the PSRAM settings of the build are wrong).
 8. SEN0628 tab → Slip detection: leave **Tighten on slip unticked**. The detector still runs
    with placeholder thresholds and may show SLIP badges; ignore them (they are logged and help
@@ -57,10 +58,15 @@ use the class override.
 | B | **Disturbances** | Grasp. Every ~5 s, one of these, each with **O** then **E**: tap the table, tap the gripper base, touch the object lightly, wave a hand through the sensor view. Then Open. | 1 |
 | C | **Pull** | Grasp, wait 3 s. **P**, pull the object slowly upward (out of the palm) until it moves or comes free, **E**. Re-grasp and do it again faster. A third time, pull only until it starts to move, then stop. | 3 |
 | D | **Twist** | Grasp, wait 3 s. **T**, rotate the object (about the gripper axis, then tilt it sideways), **E**. | 3 |
+| C2 | **Pull from outside the view** | Same as C, but pull by the string (hanging objects) or with a tool / a cord tied to the object, so **no hand enters the sensor view**. Keeps the detector from learning "a hand appeared" instead of "the object moved". | 2 |
+| B2 | **Hand grips, object stays** | Grasp. **O**, take hold of the object with your hand as if to pull, but do **not** move it for 2 s, let go, **E**. | 2 |
 | E | **Slide** | Only for elongated objects (tube, drill handle, anything long). Grasp, wait 3 s. **S**, push/pull it along its length through the fingers, **E**. | 3 |
 
 Egg: only A, B and a very gentle C (with **Delicate** ticked on the SEN0628 tab).
 Drill: set the class override to **large** (SEN0628 tab) before grasping.
+
+**After each object:** Recordings panel → **Download all (.zip)**, check the zip opened, then
+**Clear all**. This keeps the browser's storage small (a session can reach 100+ MB).
 
 Each grasp is its own recording automatically (from 1 s before START to 1 s after it is back in
 IDLE). One grasp per trial is easiest to analyse; several slips inside one grasp are fine as

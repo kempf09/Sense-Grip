@@ -670,7 +670,7 @@ function dl(r){save(recName(r),csvOf(r));
 function renderRecs(){var l=$('recList');if(!RECS.length){l.textContent='No recordings yet';return}
   var h='<table><tr><th>Name</th><th>s</th><th>rows</th><th>class</th><th>width</th><th>result</th><th></th></tr>';
   RECS.slice().reverse().forEach(function(r){var i=RECS.indexOf(r),d=r.rows.length?((+r.rows[r.rows.length-1].split(',')[1]-(+r.rows[0].split(',')[1]))/1000).toFixed(1):'0';
-    h+='<tr><td>'+esc(recName(r))+(r.gap?' <b style="color:#ffb04e">gap</b>':'')+(r.open?' (recording)':'')+(r.marks?' · '+r.marks+' marks':'')+(r.tof&&r.tof.length?' · '+r.tof.length+' frames':'')+'</td><td>'+d+'</td><td>'+r.rows.length+'</td><td>'+esc(r.cls||'-')+'</td><td>'+esc(r.width||'-')+'</td><td>'+esc(r.final||'-')+'</td>'+
+    h+='<tr><td>'+esc(recName(r))+(r.gap?' <b style="color:#ffb04e">gap</b>':'')+(r.open?' (recording)':'')+(r.marks?' · '+r.marks+' marks':'')+(r.tof&&r.tof.length?' · '+r.tof.length+' frames ('+(d>0?(r.tof.length/d).toFixed(0):'-')+'/s)':'')+'</td><td>'+d+'</td><td>'+r.rows.length+'</td><td>'+esc(r.cls||'-')+'</td><td>'+esc(r.width||'-')+'</td><td>'+esc(r.final||'-')+'</td>'+
       '<td><button class="b" data-dl="'+i+'">CSV</button> <button class="b" data-rm="'+i+'">Delete</button></td></tr>'});
   l.innerHTML=h+'</table>';
   l.querySelectorAll('[data-dl]').forEach(function(b){b.onclick=function(){dl(RECS[+b.dataset.dl])}});
