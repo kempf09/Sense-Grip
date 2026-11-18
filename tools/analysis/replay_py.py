@@ -30,7 +30,8 @@ test_pipeline.py):
   * fusion: mode 0 fsr, 1 tof, 3 both flagged within fuseWindowMs (each flag's last time), anything else = either.
     Event on a candidate row unless inside holdoffMs of the previous event. reason (printed only on event rows) =
     the row's flags; mode 3 always fsr+tof.
-  * re-baseline after an event: at the first row with t >= event t + holdoffMs the baseline is taken again (forces,
+  * re-baseline after an event: at the first row with t >= event t + holdoffMs the baseline is taken again and the
+    force history restarts at that row (forces,
     the latest frame if any, the object measurement); FSR/ToF confirmation runs, the zone count and the "flag seen"
     state for mode 3 restart.
   * inactive rows print `0,0.000,0,0,,0,0,`; fsr_drop %.3f, tof_disp_mm %.1f or empty.
@@ -207,17 +208,23 @@ def run(arr: dict, params: dict | None = None, force_active: bool = False) -> di
         F = arr["force"][a:e]
         # window maximum per pad (independent of the baseline; history since the segment start, <= 64 rows)
         cur0 = np.where(np.isnan(F[k:]), np.float32(0), F[k:])     # NaN current counts as 0
-        mx = cur0.copy()
-        for off in range(1, SLIP_HIST):
-            j = R - off
-            ok = j >= 0
-            if not ok.any():
-                break
-            ok &= (tr - t[np.maximum(j, 0)]) <= win
-            if not ok.any():
-                break
-            v = F[np.maximum(j, 0)]
-            mx = np.where(ok[:, None] & (v > mx), v, mx)
+
+        def wmax(lo):
+            # window maximum using history rows j >= lo only (lo = segment start, or the
+            # re-baseline row: slip_core keeps only the current step's entry there, histN = 1)
+            m_ = cur0.copy()
+            for off in range(1, SLIP_HIST):
+                j = R - off
+                ok = j >= lo
+                if not ok.any():
+                    break
+                ok &= (tr - t[np.maximum(j, 0)]) <= win
+                if not ok.any():
+                    break
+                v = F[np.maximum(j, 0)]
+                m_ = np.where(ok[:, None] & (v > m_), v, m_)
+            return m_
+        mx = wmax(0)
         L0 = arr["last_frame"][a + k]
         bf, pending = (int(L0), False) if L0 >= 0 else (-1, True)
         s, hold_until = 0, None
@@ -244,6 +251,7 @@ def run(arr: dict, params: dict | None = None, force_active: bool = False) -> di
                 out["reason"][a + k + s + r] = f["reason"][r]
             s += nxt
             if r >= 0 and s < len(R):                 # re-baseline: frame only if one exists at that row
+                mx = wmax(k + s)                      # force history restarts at the re-baseline row
                 Ls = arr["last_frame"][a + k + s]
                 if Ls >= 0:
                     bf, pending = int(Ls), False

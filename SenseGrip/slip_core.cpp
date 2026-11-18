@@ -86,6 +86,9 @@ SlipOut slipStep(SlipState& s, const SlipParams& p, const SlipInput& in) {
     s.obj0 = in.objValid;
     if (in.objValid) { s.range0 = in.rangeMm; s.height0 = in.heightMm; for (int k = 0; k < 3; k++) s.rad0[k] = in.rad[k]; }
     s.tofOver = false; s.fsrOver = false; s.tofZones = 0;
+    // Forget the force history before the new baseline (only the current step stays), so a force
+    // still falling when the holdoff ends is not compared with the level before it.
+    s.histN = 1;
     s.haveFsrFlag = s.haveTofFlag = false;
   }
 

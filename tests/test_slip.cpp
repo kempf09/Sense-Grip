@@ -190,3 +190,19 @@ TEST(slip_rebaseline_after_event_force_settles_lower) {
   for (; t < 8500; t += 10) if (slipStep(st, p, in(t, t < 8100 ? 1.0f : 0.5f)).slip) events++;   // -50 % from the new level
   CHECK_EQ(events, 2);
 }
+// Review M1: re-baseline while the force is still falling must not re-fire from the old history.
+TEST(slip_rebaseline_clears_force_history) {
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
+  uint32_t t = 0; hold(st, p, t, 1000, 2.0f);
+  int events = 0; uint32_t first = 0;
+  for (; t < 4000; t += 10) {
+    float f = 2.0f;
+    if (t >= 1000) f = 1.0f;                                       // fast drop: event ~1030
+    if (t >= 2300) f = 1.0f - 0.3f * (float)(t - 2300) / 250.0f;   // still falling around re-baseline
+    if (t >= 2550) f = 0.7f;
+    SlipOut o = slipStep(st, p, in(t, f));
+    if (o.slip) { if (!events) first = t; events++; }
+  }
+  CHECK_EQ(events, 1);
+  CHECK(first < 1100);
+}
