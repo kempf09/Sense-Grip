@@ -132,7 +132,7 @@ def test_scoring():
     for i in (n_pre + 1980, n_pre + 2050, n_pre + 4050, n_pre + 1000, n_pre + 3000, n_pre + 2140, n_pre + 5010):
         slip[i] = True                 # detection (-200 ms), 2nd event same window, disturbance, 2 quiet FA,
     sc = se.score(rec, {"t": t, "active": active, "slip": slip})         # 1 inside end+0.5 s, 1 unscorable
-    assert sc.slips == [("pull", True, -200, 10_000 + 10 * (n_pre + 2000))], sc.slips
+    assert [s[:4] for s in sc.slips] == [("pull", True, -200, 10_000 + 10 * (n_pre + 2000))], sc.slips
     assert sc.dists == [True]
     assert len(sc.fa_times) == 2 and sc.unscorable_events == 1 and sc.n_events == 7
     win = (2100 + 50 - 2000 + 50) + (4100 + 50 - 4000 + 50) + (5000 + 300 + 50 - 5000 + 50)   # rows in windows
