@@ -51,19 +51,23 @@ Outputs `out/rec_<date>/report.md`, `best_params.json`, `config_patch.txt`,
 6. If no parameter set meets the limits: report the trade-off curve (`results_all_sets.csv`) to
    the operator rather than relaxing the limits silently.
 
-## 4. Apply the tuned values
+## 4. Apply the tuned values (rehearsed 2026-11-18 on a throwaway branch: ~15 lines, all checks green)
 
-1. `SenseGrip/slip_core.cpp` `slipDefaults()`: set the chosen values (they are the config
-   defaults, `config_core.cpp` copies them).
-2. Bump `CFG_VERSION` and add to `upgradeConfig`: for configs from older versions whose slip
-   fields still equal the old placeholder defaults, set the new values (operator-changed values
-   are kept). Test it like `config_upgrade_raises_old_max_force`.
-3. Update `tests/test_slip.cpp` expectations that use the defaults; `make -C tests`,
-   `make -C tools/slip_replay check`, `tools/e2e/run.sh`.
-4. Re-run the pipeline with the new defaults as a check (`results_all_sets.csv` row for them).
-5. Document the numbers in the spec (§4 placeholders → tuned, with the report's figures) and in
-   README "Slip detection".
-6. Commit, push, CI green. The operator flashes and runs checklist steps 37–38 (slip warning,
+1. `SenseGrip/slip_core.cpp` `slipDefaults()`: set the chosen values (config defaults copy them).
+2. `SenseGrip/config.cpp`: `CFG_VERSION` 9 → 10, and add `ver == 9 ? sizeof(GripConfig)` to both
+   the `stored` and `keep` lists (the struct did not change, so a v9 blob is the full struct).
+3. `SenseGrip/config_core.cpp` `upgradeConfig`: `if (fromVersion < 10)` set each slip field that
+   still equals its **v9 placeholder** (0.30 / 300 / 0.15 / 30 / 350 / 12 / 0.10 / 4 / 150 / 0 / 2 /
+   500 / 500 / 1500) to the new default; values the operator changed are kept. Add a test like
+   `config_upgrade_v9_placeholders_take_tuned_defaults` (placeholder → new value, other value kept).
+4. `tests/test_slip.cpp`: only `slip_defaults` checks the defaults (the behaviour tests use the
+   fixed `P0()` placeholders on purpose) — update its expected values.
+5. `make -C tests`, `make -C tools/slip_replay check` (the equivalence rows change with the
+   defaults, which is fine: it compares firmware-order vs replay, both on the new defaults),
+   `tools/e2e/run.sh`.
+6. Re-run the pipeline on the real data as a check; document the numbers in the spec (§4
+   placeholders → tuned, with the report's figures) and README "Slip detection".
+7. Commit, push, CI green. The operator flashes and runs checklist steps 37–38 (slip warning,
    then **Tighten on slip** on one object).
 
 ## 5. Phase 3 checks from the same recordings

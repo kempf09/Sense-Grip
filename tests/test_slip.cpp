@@ -4,6 +4,15 @@
 #include <cstring>
 
 namespace {
+// Fixed test parameters (the v9 placeholder values), independent of slipDefaults(): tuning the
+// defaults from the hardware recordings must not change what these behaviour tests check.
+SlipParams P0() {
+  SlipParams p;
+  p.fsrDropFrac = 0.30f; p.fsrWindowMs = 300; p.fsrMinForceN = 0.15f; p.fsrConfirmMs = 30;
+  p.tofNearMm = 350; p.tofZoneMm = 12; p.tofZoneFrac = 0.10f; p.tofZoneCount = 4; p.tofConfirmMs = 150;
+  p.tofDispMm = 0.0f; p.mode = 2; p.fuseWindowMs = 500; p.settleMs = 500; p.holdoffMs = 1500;
+  return p;
+}
 uint16_t FR[3][64];
 SlipInput in(uint32_t t, float f, bool active = true) {
   SlipInput x{}; x.tMs = t; x.active = active;
@@ -30,7 +39,7 @@ TEST(slip_defaults) {
   CHECK_EQ(p.holdoffMs, (uint16_t)1500);
 }
 TEST(slip_not_armed_before_settle_or_outside_monitor) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0;
   SlipOut o = hold(st, p, t, 400, 2.0f);
   CHECK(!o.armed);
@@ -40,7 +49,7 @@ TEST(slip_not_armed_before_settle_or_outside_monitor) {
   CHECK(!o.armed);
 }
 TEST(slip_quiet_hold_with_slow_relaxation_no_event) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0; bool any = false;
   for (; t < 30000; t += 10) {                         // -10 % per 10 s
     const float f = 2.0f * (1.0f - 0.01f * (float)t / 1000.0f);
@@ -50,7 +59,7 @@ TEST(slip_quiet_hold_with_slow_relaxation_no_event) {
   CHECK(!any);
 }
 TEST(slip_fast_force_drop_fires_fsr) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0;
   SlipOut o = hold(st, p, t, 1000, 2.0f);
   CHECK(o.armed);
@@ -65,7 +74,7 @@ TEST(slip_fast_force_drop_fires_fsr) {
   CHECK(o.fsrDrop > 0.5f);
 }
 TEST(slip_holdoff_single_event) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0; hold(st, p, t, 1000, 2.0f);
   int events = 0;
   for (int k = 0; k < 100; k++, t += 10) {              // force keeps oscillating hard for 1 s
@@ -75,7 +84,7 @@ TEST(slip_holdoff_single_event) {
   CHECK_EQ(events, 1);
 }
 TEST(slip_frame_change_fires_tof) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0;
   for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
   for (int z = 0; z < 6; z++) FR[1][z] = 240;           // object moved: 6 zones +40 mm
@@ -89,7 +98,7 @@ TEST(slip_frame_change_fires_tof) {
   CHECK(o.tofZones >= 6);
 }
 TEST(slip_frame_noise_and_far_zones_ignored) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   for (int z = 0; z < 64; z++) FR[2][z] = 900;          // far background on sensor 3
   uint32_t t = 0;
   for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
@@ -99,7 +108,7 @@ TEST(slip_frame_noise_and_far_zones_ignored) {
   CHECK(!fired);
 }
 TEST(slip_mode_both_needs_both) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); p.mode = 3; fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); p.mode = 3; fillFrame(200);
   uint32_t t = 0;
   for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
   bool fired = false;
@@ -111,7 +120,7 @@ TEST(slip_mode_both_needs_both) {
   CHECK(fired);
 }
 TEST(slip_mode_fsr_only_ignores_frames) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); p.mode = 0; fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); p.mode = 0; fillFrame(200);
   uint32_t t = 0;
   for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
   for (int z = 0; z < 20; z++) FR[0][z] = 300;
@@ -120,14 +129,14 @@ TEST(slip_mode_fsr_only_ignores_frames) {
   CHECK(!fired);
 }
 TEST(slip_unloaded_pads_ignored) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0; hold(st, p, t, 1000, 0.1f);           // below fsrMinForceN on every pad
   bool fired = false;
   for (int k = 0; k < 30; k++, t += 10) if (slipStep(st, p, in(t, 0.0f)).slip) fired = true;
   CHECK(!fired);
 }
 TEST(slip_param_names_round_trip) {
-  SlipParams p = slipDefaults();
+  SlipParams p = P0();
   CHECK(slipParamSet(p, "fsrDropFrac", 0.5f)); CHECK_NEAR(p.fsrDropFrac, 0.5f, 1e-6);
   CHECK(slipParamSet(p, "mode", 3)); CHECK_EQ(p.mode, (uint8_t)3);
   CHECK(!slipParamSet(p, "nope", 1));
@@ -139,14 +148,14 @@ TEST(slip_param_names_round_trip) {
 
 // Review fixes: a NaN current force counts as 0 (a drop); a single glitch frame does not confirm.
 TEST(slip_nan_current_force_is_a_drop) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0; hold(st, p, t, 1000, 2.0f);
   bool fired = false;
   for (int k = 0; k < 10; k++, t += 10) { SlipInput x = in(t, NAN); x.force[1] = 2.0f; if (slipStep(st, p, x).slip) fired = true; }
   CHECK(fired);
 }
 TEST(slip_tof_single_glitch_record_does_not_confirm) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0;
   for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
   for (int z = 0; z < 8; z++) FR[0][z] = 0;               // dropout glitch on sensor 1 ...
@@ -161,7 +170,7 @@ TEST(slip_tof_single_glitch_record_does_not_confirm) {
 // baseline and re-fired every holdoff. After an event the detector re-baselines once the holdoff
 // has passed.
 TEST(slip_rebaseline_after_event_no_refire_when_displaced) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0;
   for (; t < 1000; t += 10) { SlipInput x = in(t, 2.0f); x.frameNew = (t % 70) == 0; slipStep(st, p, x); }
   for (int z = 0; z < 10; z++) FR[1][z] = 260;            // object moved and stays there
@@ -173,7 +182,7 @@ TEST(slip_rebaseline_after_event_no_refire_when_displaced) {
   CHECK_EQ(events, 2);
 }
 TEST(slip_rebaseline_after_event_force_settles_lower) {
-  SlipState st; slipReset(st); SlipParams p = slipDefaults(); fillFrame(200);
+  SlipState st; slipReset(st); SlipParams p = P0(); fillFrame(200);
   uint32_t t = 0; hold(st, p, t, 1000, 2.0f);
   int events = 0;
   for (; t < 8000; t += 10) if (slipStep(st, p, in(t, t < 1100 ? 2.0f : 1.0f)).slip) events++;   // drop to 1 N and stay
