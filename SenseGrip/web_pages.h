@@ -614,6 +614,7 @@ function onLogLine(line){
   PRE.push(line);if(PRE.length>100)PRE.shift();                  // 1 s pre-roll
   if(f[34]&&f[34].slice(0,5)==='mark:'){if(REC)REC.marks++;if(MAN)MAN.marks++}
   [REC,MAN].forEach(function(r){if(r&&r.lastSeq!==undefined&&seq!==r.lastSeq+1)r.gap=true});
+  if(REC&&REC.endAt!==null&&st==='START'){closeRec(REC);REC=null}      // quick re-arm: new grasp, new recording
   if(REC){REC.rows.push(line);REC.lastSeq=seq;
     if(f[32]&&(st==='PRE_TOUCH'||st==='GRASP'||st==='MONITOR'))REC.cls=f[32];   // the latched class
     else if(!REC.cls&&f[32])REC.cls=f[32];if(!REC.width&&f[26])REC.width=f[26];
@@ -636,6 +637,7 @@ function tofPoll(){var from=TLOG.next===null?4294967295:TLOG.next;   // first lo
       var lines=t.split('\n').filter(function(l){return l&&l.slice(0,4)!=='seq,'});
       lines.forEach(onTofLine);TLOG.next=nx;
       if(lines.length>=30)return tofPoll()})}).catch(function(){})}
+var logAgain=false;
 function logPoll(){if(logBusy)return;logBusy=true;
   var from=LOG.next===null?0:LOG.next;
   tofPoll().then(function(){return fetch('/api/log?from='+from+'&max=600',{cache:'no-store'})}).then(function(r){
@@ -647,9 +649,10 @@ function logPoll(){if(logBusy)return;logBusy=true;
       if(LOG.next!==null&&old>LOG.next){if(REC)REC.gap=true;if(MAN)MAN.gap=true}
       var lines=t.split('\n').filter(function(l){return l&&l.slice(0,4)!=='seq,'});
       lines.forEach(onLogLine);
-      if(lines.length>=600)setTimeout(logPoll,0);                // behind: catch up at once
+      if(lines.length>=600)logAgain=true;                         // behind: catch up at once (no timer)
       LOG.next=nx;idbPut('meta',{next:LOG.next,boot:LOG.boot,tnext:TLOG.next},'log');
     })}).catch(function(){}).then(function(){logBusy=false;
+      if(logAgain){logAgain=false;logPoll()}
       var dt=(Date.now()-logT0)/1000;if(dt>=2){$('recStat').textContent='collector: '+Math.round(logRows/dt)+' rows/s'+tofNote+storeNote+(REC?' · recording grasp ('+REC.rows.length+' rows)':'')+(MAN?' · manual ('+MAN.rows.length+' rows)':'');logRows=0;logT0=Date.now()}})}
 function csvOf(r){var c=r.cfg||{},k=r.cls,L=[];
   L.push('# SenseGrip recording '+recName(r));L.push('# firmware: '+(r.fw||'?'));
@@ -670,7 +673,7 @@ function dl(r){save(recName(r),csvOf(r));
 function renderRecs(){var l=$('recList');if(!RECS.length){l.textContent='No recordings yet';return}
   var h='<table><tr><th>Name</th><th>s</th><th>rows</th><th>class</th><th>width</th><th>result</th><th></th></tr>';
   RECS.slice().reverse().forEach(function(r){var i=RECS.indexOf(r),d=r.rows.length?((+r.rows[r.rows.length-1].split(',')[1]-(+r.rows[0].split(',')[1]))/1000).toFixed(1):'0';
-    h+='<tr><td>'+esc(recName(r))+(r.gap?' <b style="color:#ffb04e">gap</b>':'')+(r.open?' (recording)':'')+(r.marks?' · '+r.marks+' marks':'')+(r.tof&&r.tof.length?' · '+r.tof.length+' frames ('+(d>0?(r.tof.length/d).toFixed(0):'-')+'/s)':'')+'</td><td>'+d+'</td><td>'+r.rows.length+'</td><td>'+esc(r.cls||'-')+'</td><td>'+esc(r.width||'-')+'</td><td>'+esc(r.final||'-')+'</td>'+
+    h+='<tr><td>'+esc(recName(r))+(r.gap?' <b style="color:#ffb04e">gap</b>':'')+(r.open?' (recording)':'')+(r.marks?' · '+r.marks+' marks':'')+(r.exported?' · downloaded':' · <b>not downloaded</b>')+(r.tof&&r.tof.length?' · '+r.tof.length+' frames ('+(d>0?(r.tof.length/d).toFixed(0):'-')+'/s)':'')+'</td><td>'+d+'</td><td>'+r.rows.length+'</td><td>'+esc(r.cls||'-')+'</td><td>'+esc(r.width||'-')+'</td><td>'+esc(r.final||'-')+'</td>'+
       '<td><button class="b" data-dl="'+i+'">CSV</button> <button class="b" data-rm="'+i+'">Delete</button></td></tr>'});
   l.innerHTML=h+'</table>';
   l.querySelectorAll('[data-dl]').forEach(function(b){b.onclick=function(){dl(RECS[+b.dataset.dl])}});
@@ -681,7 +684,7 @@ var CRCT=null;function crc32(b){if(!CRCT){CRCT=[];for(var n=0;n<256;n++){var c=n
   var c=0xFFFFFFFF;for(var i=0;i<b.length;i++)c=CRCT[(c^b[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
 function zipOf(files){var enc=new TextEncoder(),parts=[],cen=[],off=0;
   function u16(v){return[v&255,(v>>8)&255]}function u32(v){return[v&255,(v>>8)&255,(v>>16)&255,(v>>>24)&255]}
-  files.forEach(function(f){var nm=enc.encode(f.name),d=enc.encode(f.text),crc=crc32(d);
+  files.forEach(function(f){var nm=enc.encode(f.name),d=f.data||enc.encode(f.text),crc=crc32(d);
     var h=[].concat(u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(d.length),u32(d.length),u16(nm.length),u16(0));
     parts.push(new Uint8Array(h),nm,d);
     cen.push({h:new Uint8Array([].concat(u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(d.length),u32(d.length),u16(nm.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(off))),nm:nm});
@@ -690,17 +693,28 @@ function zipOf(files){var enc=new TextEncoder(),parts=[],cen=[],off=0;
   parts.push(new Uint8Array([].concat(u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(cs),u32(off),u16(0))));
   return new Blob(parts,{type:'application/zip'})}
 function tofCsvOf(r){return '# SenseGrip raw SEN0628 frames for '+recName(r)+' | mm per zone, raw zone index, 0 or >=4000 = no target | row_seq links to seq in the main file\n'+tofHeader()+'\n'+r.tof.join('\n')+'\n'}
-$('recAll').onclick=function(){var files=[];RECS.forEach(function(r){if(r.open)return;files.push({name:recName(r),text:csvOf(r)});
-    if(r.tof&&r.tof.length)files.push({name:recName(r).replace(/\.csv$/,'_tof.csv'),text:tofCsvOf(r)})});
-  if(!files.length){toast('No finished recordings');return}
+$('recAll').onclick=function(){var files=[],enc=new TextEncoder(),open=0,done=[];
+  RECS.forEach(function(r){if(r.open){open++;return}
+    files.push({name:recName(r),data:enc.encode(csvOf(r))});                  // encoded at once: text not kept
+    if(r.tof&&r.tof.length)files.push({name:recName(r).replace(/\.csv$/,'_tof.csv'),data:enc.encode(tofCsvOf(r))});
+    done.push(r)});
+  if(open)toast(open+' recording(s) still recording - not in this zip; download again when they finish');
+  if(!files.length){if(!open)toast('No finished recordings');return}
+  done.forEach(function(r){if(!r.exported){r.exported=true;idbPut('recs',r)}});
+  renderRecs();
   var a=document.createElement('a');a.href=URL.createObjectURL(zipOf(files));a.download='sensegrip_recordings_'+stamp(Date.now())+'.zip';
   document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},2000)};
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
-function mark(t){post('/api/log/mark?type='+t).then(function(j){if(j)toast('Mark: '+t)})}
+function mark(t){post('/api/log/mark?type='+t).then(function(j){if(j){toast('Mark: '+t);return}
+  setTimeout(function(){post('/api/log/mark?type='+t).then(function(k){toast(k?'Mark: '+t+' (retried)':'MARK LOST: '+t+' - press again')})},80)})}
 document.querySelectorAll('[data-mark]').forEach(function(b){b.onclick=function(){mark(b.dataset.mark)}});
 document.addEventListener('keydown',function(ev){var tg=(ev.target&&ev.target.tagName)||'';if(/INPUT|SELECT|TEXTAREA/.test(tg)||ev.ctrlKey||ev.metaKey||ev.altKey||ev.repeat)return;
   var k={p:'pull',t:'twist',s:'slide',o:'other',e:'end'}[ev.key.toLowerCase()];if(k){ev.preventDefault();mark(k)}});
-$('recClr').onclick=function(){if(!confirm('Delete every recording stored in this browser?'))return;RECS.filter(function(r){return !r.open}).forEach(function(r){idbDel(r.id)});RECS=RECS.filter(function(r){return r.open});renderRecs()};
+// Clear all deletes only recordings that went into a downloaded zip: an unexported one is never lost.
+$('recClr').onclick=function(){var del=RECS.filter(function(r){return !r.open&&r.exported}),keep=RECS.length-del.length;
+  if(!del.length){toast('Nothing to clear: download the zip first (only downloaded recordings are deleted)');return}
+  if(!confirm('Delete the '+del.length+' downloaded recording(s)?'+(keep?' '+keep+' not downloaded yet (or still recording) are kept.':'')))return;
+  del.forEach(function(r){idbDel(r.id)});RECS=RECS.filter(function(r){return del.indexOf(r)<0});renderRecs()};
 setInterval(function(){[REC,MAN].forEach(function(r){if(r)saveOpen(r)})},5000);
 idbOpen().then(function(d){DB=d;return Promise.all([idbGet('meta','log'),idbAll()])}).then(function(v){
   var m=v[0];if(m){LOG.next=m.next;LOG.boot=m.boot;TLOG.next=m.tnext===undefined?null:m.tnext}

@@ -20,7 +20,8 @@ files, so what is not recorded cannot be tuned.
 7. **Test grasp first:** grasp any object, press **P** then **E** while it is held, Open.
    Download that recording: the `.csv` must contain `mark:pull` and `mark:end` in the `event`
    column, and the `_tof.csv` must have frames. The recording list shows **frames/s**: expect
-   roughly 20–45 (three sensors). Note the number. If the Recordings panel says "FRAME LOG
+   roughly 20–45 (three sensors); fewer when nothing moves in front of the sensors (unchanged
+frames are not stored). Note the number. If the Recordings panel says "FRAME LOG
    UNAVAILABLE", stop and report it (the PSRAM settings of the build are wrong).
 8. SEN0628 tab → Slip detection: leave **Tighten on slip unticked**. The detector still runs
    with placeholder thresholds and may show SLIP badges; ignore them (they are logged and help
@@ -66,7 +67,8 @@ Egg: only A, B and a very gentle C (with **Delicate** ticked on the SEN0628 tab)
 Drill: set the class override to **large** (SEN0628 tab) before grasping.
 
 **After each object:** Recordings panel → **Download all (.zip)**, check the zip opened, then
-**Clear all**. This keeps the browser's storage small (a session can reach 100+ MB).
+**Clear all**. Clear all only deletes recordings that are in a downloaded zip (the list marks the
+others "not downloaded"), so a grasp that was still recording is never lost. This keeps the browser's storage small (a session can reach 100+ MB).
 
 Each grasp is its own recording automatically (from 1 s before START to 1 s after it is back in
 IDLE). One grasp per trial is easiest to analyse; several slips inside one grasp are fine as
